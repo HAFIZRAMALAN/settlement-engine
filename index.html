@@ -3186,7 +3186,19 @@ document.addEventListener('change', async e => {
 /* ===== ext: merchant.js ===== */
 /* ====================== MERCHANT STATEMENT — CSV bank DVS04A (credit) / DVS04E (debit) → Merchant statement tool (sheet credit, debit, MIX) ======================
    Follows the month file's own convention: number style (text vs number), debit column mapping, week colours, late-row highlight, V/W formulas. */
-const MS = { wb: null, info: null, csv: [], names: {}, types: {}, prof: {} };
+const MS = { names: {}, types: {}, prof: {}, sel: 'SBST', data: {}, projects: [] };
+// every merchant is its own project (own month file, CSVs and checks); wb / info / csv always mean the selected project's
+['wb', 'info', 'csv'].forEach(k => Object.defineProperty(MS, k, { get() { const d = MS.data[MS.sel] || (MS.data[MS.sel] = { wb: null, info: null, csv: [] }); return d[k]; }, set(v) { (MS.data[MS.sel] || (MS.data[MS.sel] = { wb: null, info: null, csv: [] }))[k] = v; } }));
+const MS_SEED = [
+  { id: 'SBST', name: 'SBST', mers: ['027031838113'], kw: ['SBST'] },
+  { id: 'MYBUS', name: 'CASHLESS MYBUS', mers: ['027031779283'], kw: ['CASHLESS', 'MYBUS'] },
+  { id: 'TBS', name: 'TBS', mers: ['027032122905', '027015533706'], kw: ['TBS'] },
+  { id: 'MS', name: 'MS', mers: [], kw: ['MS'] },
+  { id: 'KT', name: 'KT', mers: [], kw: ['KT'] },
+];
+const msSaveProj = () => DB.set('msProjects', MS.projects);
+const msByMer = mer => MS.projects.find(p => p.mers.includes(mer));
+const msByFile = name => { const t = name.toUpperCase().split(/[^A-Z0-9]+/); return MS.projects.find(p => p.kw.some(k => t.includes(k.toUpperCase()))); };
 const MS_PAL = ['FFB9E3DD', 'FFC9DDF0', 'FFCDE5BE', 'FFF9DDB5', 'FFE4DFEC', 'FFFCE4D6', 'FFBDD7EE', 'FFC6E0B4', 'FFFFF2CC', 'FFD9D2E9', 'FFFDE2C4', 'FFD0E8F2', 'FFE2EFDA', 'FFF2DCDB', 'FFDDEBF7', 'FFEDE7F6'];
 const MS_LATE = 'FFF9DCE0', MS_OLD = 'FFFFF4C7', MS_N = 23, MS_SHEETS = ['credit', 'debit', 'MIX', 'AMEX'];
 const MS_MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -3415,27 +3427,45 @@ async function msTemplate() {
 
 EXT.ingest.push(async (file, wb, names, chip) => {
   if (!(names.includes('CardType') && names.includes('TID MID COHERENT') && names.includes('MIX'))) return null;
+  const P = msByFile(file.name); if (P) MS.sel = P.id;
   MS.wb = { name: file.name, buf: await file.arrayBuffer() }; MS.info = msInspect(wb, file.name);
   const I = MS.info, B = I.banners.credit || [];
-  Object.assign(chip, { kind: 'Merchant statement tool', ok: true, module: 'M', note: `${I.data} transaksi credit${B.length ? ' · terakhir ' + B[B.length - 1].text : ''}${I.month ? ' · ' + MS_MON[I.month % 100 - 1] + ' ' + Math.floor(I.month / 100) : ''}` });
+  Object.assign(chip, { kind: 'Merchant statement tool', ok: true, module: 'M', note: `${(MS.projects.find(p => p.id === MS.sel) || {}).name || ''} · ${I.data} transaksi credit${B.length ? ' · terakhir ' + B[B.length - 1].text : ''}${I.month ? ' · ' + MS_MON[I.month % 100 - 1] + ' ' + Math.floor(I.month / 100) : ''}` });
   return chip;
 });
 EXT.report.push(async (file, tables, text, chip) => {
   const raw = new TextDecoder('utf-8').decode(await file.arrayBuffer());
   if (!/Report Type\s*:\s*,\s*(DVS04[AE]|T41AX)/i.test(raw)) return null;
   const x = msParseCsv(raw, file.name);
+  let P = msByMer(x.mer);
+  if (!P) { P = { id: 'M' + x.mer, name: 'Merchant ' + x.mer, mers: [x.mer], kw: [] }; MS.projects.push(P); await msSaveProj(); }   // unknown merchant → its own project (can be joined to MS / KT / … in the tab)
+  MS.sel = P.id;
   MS.csv = MS.csv.filter(y => y.name !== x.name).concat(x);
   const ok = x.totC == null || x.totC === x.rows.reduce((a, r) => a + r.amtC, 0);
-  Object.assign(chip, { kind: { C: 'Merchant CSV credit (DVS04A)', D: 'Merchant CSV debit (DVS04E)', X: 'Merchant CSV AMEX (T41AX)' }[x.kind], ok: true, module: 'M', note: `${msD(x.rep)} · ${x.rows.length} transaksi · RM${fmtC(x.rows.reduce((a, r) => a + r.amtC, 0))}${ok ? '' : ' · JUMLAH TAK SAMA DENGAN CSV'}` });
+  Object.assign(chip, { kind: { C: 'Merchant CSV credit (DVS04A)', D: 'Merchant CSV debit (DVS04E)', X: 'Merchant CSV AMEX (T41AX)' }[x.kind], ok: true, module: 'M', note: `${P.name} · ${msD(x.rep)} · ${x.rows.length} transaksi · RM${fmtC(x.rows.reduce((a, r) => a + r.amtC, 0))}${ok ? '' : ' · JUMLAH TAK SAMA DENGAN CSV'}` });
   return chip;
 });
-EXT.load.push(async () => { MS.prof = await DB.get('msProf', null) || {}; MS.names = await DB.get('msNames', null) || {}; });
+EXT.load.push(async () => {
+  MS.prof = await DB.get('msProf', null) || {}; MS.names = await DB.get('msNames', null) || {};
+  MS.projects = await DB.get('msProjects', null) || []; MS_SEED.forEach(q => { if (!MS.projects.some(p => p.id === q.id)) MS.projects.push(JSON.parse(JSON.stringify(q))); });
+});
 { const i = TABS.findIndex(t => t[0] === 'P'); TABS.splice(i < 0 ? TABS.length : i, 0, ['M', 'Merchant Statement', 'CSV DVS04A/E → credit · debit · MIX']); }
 
+function msProjBar() {
+  const P = MS.projects.find(p => p.id === MS.sel) || MS.projects[0]; if (P && P.id !== MS.sel) MS.sel = P.id;
+  const cnt = p => { const d = MS.data[p.id] || {}; return d.wb || (d.csv || []).length ? `${d.wb ? 'fail bulan ✓' : 'tiada fail bulan'} · ${(d.csv || []).length} CSV` : 'kosong'; };
+  let h = `<div class="seg" style="flex-wrap:wrap">${MS.projects.map(p => `<button class="${p.id === MS.sel ? 'on' : ''}" data-act="mssel" data-v="${esc(p.id)}"><b>${esc(p.name)}</b> <small>${cnt(p)}</small></button>`).join('')}</div>`;
+  if (P) h += `<details class="card"><summary><b>Tetapan projek ${esc(P.name)}</b> <small class="muted">· merchant ${P.mers.length ? P.mers.map(esc).join(', ') : 'belum ada (dikenal pasti bila CSV diseret)'} · nama fail bulan mengandungi ${P.kw.length ? P.kw.map(esc).join(' / ') : '-'}</small></summary>
+    <div class="row"><label class="fld">Nama projek<input class="in" data-act="msp" data-f="name" value="${esc(P.name)}"></label><label class="fld">Kata kunci nama fail bulan (pisah ;)<input class="in" data-act="msp" data-f="kw" value="${esc(P.kw.join('; '))}"></label><label class="fld">No. merchant (pisah ;)<input class="in w" data-act="msp" data-f="mers" value="${esc(P.mers.join('; '))}"></label></div>
+    ${/^M\d/.test(P.id) ? `<div class="row"><label class="fld">Merchant ini sebenarnya milik projek<select class="in" data-act="msmerge"><option value="">— pilih —</option>${MS.projects.filter(q => q !== P).map(q => `<option value="${esc(q.id)}">${esc(q.name)}</option>`).join('')}</select></label></div>` : ''}
+    <form class="row add" data-act="msadd"><input class="in" name="name" placeholder="Nama projek merchant baru" required><button class="btn sm">+ Projek</button></form></details>`;
+  return h;
+}
 EXT.render.M = function renderM() {
-  if (!MS.wb && !MS.csv.length) { panel().innerHTML = empty('Seret fail Merchant e-statement ke sini', 'Fail <b>Merchant statement tool</b> bulan semasa (.xlsx) + semua CSV bank <b>DVS04A</b> (credit) dan <b>DVS04E</b> (debit) untuk minggu itu. Engine masukkan ikut minggu, susun ikut tarikh → Card Type → Terminal, highlight warna minggu baru, transaksi lewat di atas blok, dan semak jumlah setiap CSV.'); return; }
+  const bar = msProjBar();
+  if (!MS.wb && !MS.csv.length) { panel().innerHTML = bar + empty('Seret fail Merchant e-statement ke sini', 'Fail <b>Merchant statement tool</b> bulan semasa (.xlsx) + semua CSV bank <b>DVS04A</b> (credit) dan <b>DVS04E</b> (debit) untuk minggu itu. Engine masukkan ikut minggu, susun ikut tarikh → Card Type → Terminal, highlight warna minggu baru, transaksi lewat di atas blok, dan semak jumlah setiap CSV.'); return; }
   const I = MS.info, PL = msPlan(), money = c => 'RM' + fmtC(c), sum = a => a.reduce((x, r) => x + r.amtC, 0);
-  let h = `<section class="card"><h3>Merchant Statement <span class="pill">${MS.wb ? esc(MS.wb.name) : 'fail bulan belum diseret'}</span></h3>`;
+  let h = bar + `<section class="card"><h3>${esc((MS.projects.find(p => p.id === MS.sel) || {}).name || 'Merchant')} <span class="pill">${MS.wb ? esc(MS.wb.name) : 'fail bulan belum diseret'}</span></h3>`;
   if (!MS.wb) h += `<p class="hint bad">Seret juga fail <b>Merchant statement tool</b> bulan ini (.xlsx) — data minggu ini akan disambung ke dalamnya.</p>`;
   else h += `<p class="hint">Bulan: <b>${PL.month ? MS_MON[PL.month % 100 - 1] + ' ' + Math.floor(PL.month / 100) : '?'}</b>${I.monthGuess ? ' (dari nama fail)' : ''} · ${I.data} transaksi credit sedia ada · format nombor: <b>${I.text === false ? 'nombor' : 'teks (kekal sifar depan)'}</b> · lajur debit: <b>${(I.debit || 'pos') === 'name' ? 'ikut nama lajur' : 'ikut kedudukan CSV'}</b> · susunan: <b>${I.monthly ? 'satu blok sebulan, warna selang-seli ikut hari' : 'blok mingguan, ' + (I.tint ? 'baris lebih cerah dari banner' : 'baris sama warna banner')}</b>${I.amex ? ' · AMEX (T41AX) → sheet AMEX' : ''} — semua ikut fail ini.</p>`;
   if (PL.other.length) h += `<p class="hint bad">${PL.other.length} CSV bukan bulan ini (${PL.other.map(x => msD(x.rep)).join(', ')}) — tidak dimasukkan. Seret bersama fail bulan tersebut.</p>`;
@@ -3452,7 +3482,7 @@ EXT.render.M = function renderM() {
   }
   const cs = MS.csv.slice().sort((a, b) => (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) || a.rep - b.rep);
   h += `<section class="card"><h3>Semakan CSV <span class="pill">${cs.length} fail</span></h3><div class="scroll"><table class="t dense"><tr><th>Fail</th><th>Jenis</th><th>Report</th><th class="r">Transaksi</th><th class="r">Jumlah baris</th><th class="r">Total Debit Amount (CSV)</th><th></th></tr>${cs.map(x => { const s = sum(x.rows), ok = (x.totC == null || x.totC === s) && (!x.items || x.items === x.rows.length); return `<tr><td>${esc(x.name)}</td><td>${x.kind === 'C' ? 'credit' : 'debit'}</td><td>${x.rep ? msD(x.rep) : '?'}</td><td class="r">${x.rows.length}</td><td class="r">${fmtC(s)}</td><td class="r">${x.totC == null ? '-' : fmtC(x.totC)}</td><td>${ok ? '<span class="tag ok">padan</span>' : '<span class="tag bad">tak padan</span>'}</td></tr>`; }).join('')}</table></div>
-  <div class="actions">${MS.wb && PL.weeks.some(w => w.C.length || w.D.length || w.X.length) ? `<button class="btn pri" data-act="msdl">⬇ ${esc(fname(msOutName()))}</button>` : ''}${MS.wb ? `<button class="btn" data-act="mstpl">⬇ Template kosong bulan depan</button>` : ''}<span class="sp"></span><button class="btn sm" data-act="msclr">Kosongkan senarai Merchant</button></div></section>`;
+  <div class="actions">${MS.wb && PL.weeks.some(w => w.C.length || w.D.length || w.X.length) ? `<button class="btn pri" data-act="msdl">⬇ ${esc(fname(msOutName()))}</button>` : ''}${MS.wb ? `<button class="btn" data-act="mstpl">⬇ Template kosong bulan depan</button>` : ''}<span class="sp"></span><button class="btn sm" data-act="msclr">Kosongkan projek ini</button></div></section>`;
   panel().innerHTML = h;
 };
 
@@ -3465,10 +3495,24 @@ document.addEventListener('click', async e => {
   }
   else if (a === 'mstpl') await busy('Menyediakan template…', async () => { const t = await msTemplate(); saveBlob(t.name, t.blob); });
   else if (a === 'msall') { const v = clean(($('#msAll') || {}).value || ''); if (!v) return; msPlan().newT.forEach(([t]) => { if (!clean(MS.names[t] || '')) MS.names[t] = v; }); await DB.set('msNames', MS.names); renderAll(); }
-  else if (a === 'msclr') { MS.wb = null; MS.info = null; MS.csv = []; S.files = (S.files || []).filter(c => c.module !== 'M'); renderAll(); }
+  else if (a === 'mssel') { MS.sel = b.dataset.v; renderAll(); }
+  else if (a === 'msclr') { const gone = new Set([...(MS.csv || []).map(x => x.name), MS.wb && MS.wb.name]); MS.data[MS.sel] = { wb: null, info: null, csv: [] }; S.files = (S.files || []).filter(c => !(c.module === 'M' && gone.has(c.name))); renderAll(); }
+});
+document.addEventListener('submit', async e => {
+  if (e.target.dataset.act !== 'msadd') return; e.preventDefault();
+  const name = clean(e.target.name.value); if (!name) return;
+  const P = { id: 'P' + Date.now().toString(36).toUpperCase(), name, mers: [], kw: [name.toUpperCase().split(/\s+/)[0]] };
+  MS.projects.push(P); MS.sel = P.id; await msSaveProj(); renderAll();
 });
 document.addEventListener('change', async e => {
-  const t = e.target;
+  const t = e.target, P = MS.projects.find(p => p.id === MS.sel);
+  if (t.dataset.act === 'msp' && P) { const f = t.dataset.f; P[f] = f === 'name' ? clean(t.value) || P.name : t.value.split(';').map(clean).filter(Boolean); await msSaveProj(); renderAll(); }
+  if (t.dataset.act === 'msmerge' && P && t.value) {   // unknown merchant joins an existing project: its CSVs (and month file, if that project has none) move along
+    const Q = MS.projects.find(p => p.id === t.value), from = MS.data[P.id] || { csv: [] }, to = MS.data[Q.id] || (MS.data[Q.id] = { wb: null, info: null, csv: [] });
+    Q.mers = [...new Set([...Q.mers, ...P.mers])]; to.csv = to.csv.filter(x => !from.csv.some(y => y.name === x.name)).concat(from.csv);
+    if (!to.wb && from.wb) { to.wb = from.wb; to.info = from.info; }
+    MS.projects = MS.projects.filter(p => p !== P); delete MS.data[P.id]; MS.sel = Q.id; await msSaveProj(); renderAll();
+  }
   if (t.dataset.act === 'msname') { MS.names[t.dataset.v] = clean(t.value); await DB.set('msNames', MS.names); }
   if (t.dataset.act === 'mstype') MS.types[t.dataset.v] = t.value;
 });
