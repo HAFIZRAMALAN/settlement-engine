@@ -3188,12 +3188,19 @@ document.addEventListener('change', async e => {
    Follows the month file's own convention: number style (text vs number), debit column mapping, week colours, late-row highlight, V/W formulas. */
 const MS = { wb: null, info: null, csv: [], names: {}, types: {}, prof: {} };
 const MS_PAL = ['FFB9E3DD', 'FFC9DDF0', 'FFCDE5BE', 'FFF9DDB5', 'FFE4DFEC', 'FFFCE4D6', 'FFBDD7EE', 'FFC6E0B4', 'FFFFF2CC', 'FFD9D2E9', 'FFFDE2C4', 'FFD0E8F2', 'FFE2EFDA', 'FFF2DCDB', 'FFDDEBF7', 'FFEDE7F6'];
-const MS_LATE = 'FFF9DCE0', MS_OLD = 'FFFFF4C7', MS_N = 23, MS_SHEETS = ['credit', 'debit', 'MIX'];
+const MS_LATE = 'FFF9DCE0', MS_OLD = 'FFFFF4C7', MS_N = 23, MS_SHEETS = ['credit', 'debit', 'MIX', 'AMEX'];
 const MS_MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const MS_MRE = /(^|[^A-Z])(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEPT?|OCTO?|NOV|DEC)(?=[^A-Z]|$)/i;
 const msD = t => { const d = new Date(t); return `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${String(d.getUTCFullYear()).slice(2)}`; };
 const msMon = t => t - ((new Date(t).getUTCDay() + 6) % 7) * 864e5;
 const msYM = t => { const d = new Date(t); return d.getUTCFullYear() * 100 + d.getUTCMonth() + 1; };
+const MS_BM = ['JANUARI', 'FEBRUARI', 'MAC', 'APRIL', 'MEI', 'JUN', 'JULAI', 'OGOS', 'SEPTEMBER', 'OKTOBER', 'NOVEMBER', 'DISEMBER'];
+const MS_BRE = new RegExp(`^(WEEK\\s+\\d|NAMA BULAN|(${MS_BM.join('|')})\\s+\\d{4})`, 'i');   // week banner, monthly banner, or the empty template's placeholder
+const msBanMon = a => { const m = /\((\d\d\/\d\d\/\d\d)/.exec(a); return m ? msDate(m[1]) : 0; };
+const msGroup = (t, monthly) => { const d = new Date(t); return monthly ? Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) : msMon(t); };
+const msEnd = (g, monthly) => { const d = new Date(g); return monthly ? Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0) : g + 6 * 864e5; };
+const msLabel = (g, monthly) => monthly ? `${MS_BM[new Date(g).getUTCMonth()]} ${new Date(g).getUTCFullYear()} (${msD(g)} - ${msD(msEnd(g, 1))})` : msBanner(g);
+const msSheetOf = (kind, I) => kind === 'C' ? 'credit' : kind === 'D' ? 'debit' : I && I.amex ? 'AMEX' : 'credit';
 const msBanner = m => `WEEK ${Math.ceil(new Date(m).getUTCDate() / 7)} (${msD(m)} - ${msD(m + 6 * 864e5)})`;
 const msDate = s => { const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(String(s).trim()); return m ? Date.UTC(m[3].length === 2 ? 2000 + +m[3] : +m[3], m[2] - 1, +m[1]) : null; };
 const msC = v => Math.round(parseFloat(String(v).replace(/[+,]/g, '')) * 100) || 0;
@@ -3209,7 +3216,7 @@ const msTs = v => v instanceof Date ? Date.UTC(v.getUTCFullYear(), v.getUTCMonth
 function msParseCsv(text, name) {
   const L = text.split(/\r?\n/).map(l => l.split(',')), hd = k => L.find(x => x[0].trim().toLowerCase().startsWith(k));
   const type = (hd('report type') || [])[1], rep = msDate((hd('report date') || [])[1] || ''), mer = ((hd('merchant no') || [])[2] || '').trim();
-  const kind = /DVS04A/i.test(type) ? 'C' : /DVS04E/i.test(type) ? 'D' : null;
+  const kind = /DVS04A/i.test(type) ? 'C' : /DVS04E/i.test(type) ? 'D' : /T41AX/i.test(type) ? 'X' : null;
   const rows = []; let n = 0, inSec = 0, items = 0, secAmt = 0;
   for (const x of L) {
     const a = x[0].trim();
@@ -3220,13 +3227,19 @@ function msParseCsv(text, name) {
     const f = []; for (let i = 0; i < n; i++) f.push((x[2 * i] || '').trim());
     rows.push({ kind, f, card: f[0], amtC: msC(f[1]), date: msDate(f[2]), auth: f[3], term: f[6], type: f[8].toUpperCase(), rep, file: name });
   }
-  const tot = hd('total debit amount');
-  return { name, kind, rep, mer, rows, items, secAmt, totC: tot ? msC(tot[2]) : null };
+  const tot = L.filter(x => x[0].trim().toLowerCase() === 'total debit amount');   // DVS04: one line; T41AX: one per card-type section
+  return { name, kind, rep, mer, rows, items, secAmt, totC: tot.length ? tot.reduce((a, x) => a + msC(x[2]), 0) : null };
 }
 
 // one pass over the month file: convention, lookups and the transactions already in it
 function msInspect(wb, name) {
-  const I = { name, keys: {}, tids: new Set(), types: new Set(), comp: [], months: {}, banners: {}, text: null, debit: null, tint: null, data: 0 };
+  const I = { name, keys: {}, tids: new Set(), types: new Set(), comp: [], months: {}, banners: {}, text: null, debit: null, tint: null, data: 0, amex: !!wb.getWorksheet('AMEX') };
+  const pd = wb.getWorksheet('PANDUAN'), guide = [];
+  if (pd) pd.eachRow(r => { const t = []; r.eachCell(c => t.push(msTxt(c.value))); guide.push(t.join(' | ')); });
+  const G = guide.join('\n'), hx = re => { const l = guide.find(x => re.test(x)); return l ? (l.match(/#[0-9A-F]{6}/gi) || []).map(h => 'FF' + h.slice(1).toUpperCase()) : []; };
+  I.monthly = /tiada pecahan minggu|banner bulan/i.test(G);
+  if (/Ref No\s*->\s*K/i.test(G)) I.debitHint = 'name'; else if (/Cashout[^\n]*->\s*I/i.test(G)) I.debitHint = 'pos';
+  if (I.monthly) { const b = hx(/^Banner bulan/i), d = hx(/^Blok data/i), o = hx(/^LEMON/i); I.pal = { ban: b[0] || 'FFC9DDF0', rows: d.length ? d : ['FFE3EEF8', 'FFF2F7FC'], old: o.length ? o : ['FFFFF4C7', 'FFFFFAE0'] }; }
   const tid = wb.getWorksheet('TID MID COHERENT'), ct = wb.getWorksheet('CardType'), comp = new Set();
   if (tid) tid.eachRow((r, i) => { if (i > 1 && r.getCell(1).value != null) { I.tids.add(msNorm(msTxt(r.getCell(1).value))); const c = clean(msTxt(r.getCell(2).value)); if (c) comp.add(c); } });
   if (ct) ct.eachRow((r, i) => { if (i > 1 && r.getCell(1).value != null) I.types.add(clean(msTxt(r.getCell(1).value)).toUpperCase()); });
@@ -3236,7 +3249,7 @@ function msInspect(wb, name) {
     let lastB = null;
     for (let r = 2, L = msLast(ws); r <= L; r++) {
       const row = ws.getRow(r), a = msTxt(row.getCell(1).value).trim(); if (!a) continue;
-      if (/^WEEK\s+\d/i.test(a)) { const m = /\((\d\d\/\d\d\/\d\d)/.exec(a); lastB = { r, text: a, mon: m ? msDate(m[1]) : null, argb: msArgb(row.getCell(1)) }; B.push(lastB); continue; }
+      if (MS_BRE.test(a)) { lastB = { r, text: a, mon: msBanMon(a), argb: msArgb(row.getCell(1)) }; B.push(lastB); if (!/^WEEK/i.test(a)) I.monthly = true; continue; }
       const t = msTs(row.getCell(5).value), fill = msArgb(row.getCell(1));
       K.add(msKey(a, Math.round((+row.getCell(3).value || 0) * 100), t, msTxt(row.getCell(7).value), msTxt(row.getCell(13).value)));
       if (sn !== 'credit') { if (sn === 'debit' && I.debit == null) { const i9 = row.getCell(9).value, k = msTxt(row.getCell(11).value); I.debit = typeof i9 === 'number' || k === '-' ? 'pos' : /^\d{9,}$/.test(k) ? 'name' : null; } continue; }
@@ -3245,6 +3258,7 @@ function msInspect(wb, name) {
       if (I.tint == null && lastB && lastB.argb && fill && fill !== MS_LATE && fill !== MS_OLD) I.tint = fill !== lastB.argb;
     }
   }
+  if (I.debit == null && I.debitHint) I.debit = I.debitHint;
   const top = Object.entries(I.months).sort((a, b) => b[1] - a[1])[0], fm = MS_MRE.exec(name);
   I.month = top ? +top[0] : null;
   if (!I.month && fm) { const mi = MS_MON.indexOf(fm[2].toUpperCase().slice(0, 3)), now = new Date(), y = now.getFullYear() + (mi < now.getMonth() - 6 ? 1 : 0); I.month = y * 100 + mi + 1; I.monthGuess = true; }
@@ -3252,17 +3266,17 @@ function msInspect(wb, name) {
 }
 
 function msPlan() {
-  const I = MS.info, W = new Map(), other = [], seen = { C: new Set(), D: new Set() }, newT = new Map(), newC = new Map();
+  const I = MS.info, W = new Map(), other = [], seen = { C: new Set(), D: new Set(), X: new Set() }, monthly = !!(I && I.monthly), newT = new Map(), newC = new Map();
   let month = I && I.month;
   if (!month) { const c = {}; MS.csv.forEach(x => { if (x.rep) c[msYM(x.rep)] = (c[msYM(x.rep)] || 0) + 1; }); const t = Object.entries(c).sort((a, b) => b[1] - a[1])[0]; month = t ? +t[0] : null; }
   const csv = MS.csv.slice().sort((a, b) => a.rep - b.rep || (a.kind < b.kind ? -1 : 1));
   for (const x of csv) {
     if (!x.kind || !x.rep) continue;
     if (month && msYM(x.rep) !== month) { other.push(x); continue; }
-    const mon = msMon(x.rep);
-    if (!W.has(mon)) W.set(mon, { mon, C: [], D: [], dup: 0, reps: { C: new Set(), D: new Set() }, last: 0 });
+    const mon = msGroup(x.rep, monthly);
+    if (!W.has(mon)) W.set(mon, { mon, C: [], D: [], X: [], dup: 0, reps: { C: new Set(), D: new Set(), X: new Set() }, last: 0 });
     const w = W.get(mon); w.reps[x.kind].add(x.rep); w.last = Math.max(w.last, x.rep);
-    const K = I ? I.keys[x.kind === 'C' ? 'credit' : 'debit'] : new Set();
+    const K = I ? I.keys[msSheetOf(x.kind, I)] || new Set() : new Set();
     for (const r of x.rows) {
       const k = msKey(r.card, r.amtC, r.date, r.auth, r.term);
       if (K.has(k) || seen[r.kind].has(k)) { w.dup++; continue; }
@@ -3273,41 +3287,48 @@ function msPlan() {
   }
   const weeks = [...W.values()].sort((a, b) => a.mon - b.mon);
   weeks.forEach(w => {
-    w.label = msBanner(w.mon); w.miss = { C: [], D: [] };
-    for (let t = w.mon; t <= Math.min(w.mon + 6 * 864e5, w.last); t += 864e5) ['C', 'D'].forEach(k => { if (!w.reps[k].has(t)) w.miss[k].push(msD(t).slice(0, 5)); });
-    w.late = [...w.C, ...w.D].filter(r => r.date < w.mon || msYM(r.date) !== month).length;
+    w.label = msLabel(w.mon, monthly); w.miss = { C: [], D: [], X: [] };
+    const ks = ['C', 'D', 'X'].filter(k => k !== 'X' || w.reps.X.size);
+    for (let t = w.mon; t <= Math.min(msEnd(w.mon, monthly), w.last); t += 864e5) ks.forEach(k => { if (!w.reps[k].has(t)) w.miss[k].push(msD(t).slice(0, 5)); });
+    w.late = [...w.C, ...w.D, ...w.X].filter(r => r.date < w.mon || msYM(r.date) !== month).length;
   });
-  return { month, weeks, other, newT: [...newT], newC: [...newC] };
+  return { month, monthly, weeks, other, newT: [...newT], newC: [...newC] };
 }
 
 // rewrite one sheet: the week block (banner, late rows on top, then the week sorted by date → [credit, debit] → Card Type → Terminal), later blocks shift down
 function msWrite(ws, mon, recs, ctx) {
   const P = ctx.prof, max = msLast(ws), kinds = [], isMix = ws.name === 'MIX';
-  for (let r = 1; r <= max; r++) { const a = msTxt(ws.getCell(r, 1).value).trim(); kinds[r] = !a ? 0 : /^WEEK\s+\d/i.test(a) ? 2 : 1; }
+  for (let r = 1; r <= max; r++) { const a = msTxt(ws.getCell(r, 1).value).trim(); kinds[r] = !a ? 0 : MS_BRE.test(a) ? 2 : 1; }
   const colored = r => !!msArgb(ws.getCell(r, 1));
   let lastData = 1; for (let r = max; r > 1; r--) if (kinds[r]) { lastData = r; break; }
-  const banners = []; for (let r = 2; r <= max; r++) if (kinds[r] === 2) { const m = /\((\d\d\/\d\d\/\d\d)/.exec(msTxt(ws.getCell(r, 1).value)); banners.push({ r, mon: m ? msDate(m[1]) : 0 }); }
+  const banners = []; for (let r = 2; r <= max; r++) if (kinds[r] === 2) { const t = msTxt(ws.getCell(r, 1).value); banners.push({ r, mon: msBanMon(t), ph: /^NAMA BULAN/i.test(t) }); }
   const styles = r => { const o = []; for (let c = 1; c <= MS_N; c++) o.push(JSON.parse(JSON.stringify(ws.getCell(r, c).style || {}))); return o; };
   const read = r => { const v = []; for (let c = 1; c <= 21; c++) v.push(ws.getCell(r, c).value); return v; };
-  const bi = banners.findIndex(b => b.mon === mon), nb = bi >= 0 ? banners[bi + 1] : banners.find(b => b.mon > mon);
+  let bi = banners.findIndex(b => b.mon === mon); if (bi < 0) bi = banners.findIndex(b => b.ph);
+  const nb = bi >= 0 ? banners[bi + 1] : banners.find(b => b.mon > mon);
   let s, e, color = ctx.color, keep = [];
   if (bi >= 0) {
     s = banners[bi].r; e = nb ? nb.r - 1 : max; color = msArgb(ws.getCell(s, 1)) || color;
     if (!nb) while (e > s && !kinds[e] && !colored(e)) e--;
-    for (let r = s + 1; r <= e; r++) if (kinds[r] === 1) { const v = read(r), f = msArgb(ws.getCell(r, 1)); keep.push({ v, date: msTs(v[4]), k: /^MYDEBIT/i.test(msTxt(v[16])) ? 1 : 0, type: msTxt(v[16]).toUpperCase(), term: +v[12] || 0, top: f === MS_LATE || f === MS_OLD, fill: f }); }
+    for (let r = s + 1; r <= e; r++) if (kinds[r] === 1) { const v = read(r), f = msArgb(ws.getCell(r, 1)); keep.push({ v, date: msTs(v[4]), k: /^MYDEBIT/i.test(msTxt(v[16])) ? 1 : 0, type: msTxt(v[16]).toUpperCase(), term: +v[12] || 0, top: f === MS_LATE || f === MS_OLD || (ctx.pal && ctx.pal.old.includes(f)), fill: f }); }
   } else if (nb) { s = nb.r; e = nb.r - 1; } else { s = lastData + 1; e = lastData; }
-  const endAfter = Math.max(e, max);
+  let endAfter = e; for (let r = max; r > e; r--) if (kinds[r] || colored(r)) { endAfter = r; break; }   // plain prepared rows below stay put (overwritten, not shifted)
   const after = []; for (let r = e + 1; r <= endAfter; r++) { const c22 = ws.getCell(r, 22).value; after.push({ v: read(r), st: styles(r), h: ws.getRow(r).height, fx: !!(c22 && typeof c22 === 'object' && (c22.formula || c22.sharedFormula)) }); }
-  const ds = P.ds, bs = P.bs, rowFill = P.tint ? msTint(color) : color;
+  const ds = P.ds, bs = P.bs, pal = ctx.pal, rowFill = P.tint ? msTint(color) : color;
+  if (pal) color = pal.ban;
   const cmp = (a, b) => a.date - b.date || (isMix ? a.k - b.k : 0) || (a.type < b.type ? -1 : a.type > b.type ? 1 : 0) || a.term - b.term;
   const fresh = recs.map(r => ({ v: msVals(r, P), date: r.date, k: r.kind === 'D' ? 1 : 0, type: r.type, term: +r.term || 0, top: r.date < mon || msYM(r.date) !== ctx.month, old: msYM(r.date) !== ctx.month }));
   const all = [...keep, ...fresh], top = all.filter(x => x.top).sort(cmp), main = all.filter(x => !x.top).sort(cmp);
-  const out = [{ v: [bi >= 0 ? msTxt(ws.getCell(s, 1).value) : msBanner(mon)], st: bs.map(x => ({ ...x, fill: msFill(color) })), fx: false, h: bi >= 0 ? ws.getRow(s).height : undefined }];
-  top.forEach(x => out.push({ v: x.v, st: ds.map(y => ({ ...y, fill: msFill(x.fill || (x.old ? MS_OLD : MS_LATE)) })), fx: true }));
-  main.forEach(x => out.push({ v: x.v, st: ds.map(y => ({ ...y, fill: msFill(rowFill) })), fx: true }));
+  const label = bi >= 0 && !banners[bi].ph ? msTxt(ws.getCell(s, 1).value) : msLabel(mon, ctx.monthly);
+  const alt = (list, two) => { let i = -1, d = null; return list.map(x => { if (x.date !== d) { i++; d = x.date; } return two[i % 2]; }); };   // TBS: alternate shade per day
+  const fT = pal ? alt(top, pal.old) : null, fM = pal ? alt(main, pal.rows) : null;
+  const out = [{ v: [label], st: bs.map(x => ({ ...x, fill: msFill(color) })), fx: false, h: bi >= 0 ? ws.getRow(s).height : undefined }];
+  const SC = {}, sty = argb => SC[argb] || (SC[argb] = ds.map(y => ({ ...y, fill: msFill(argb) })));   // one style set per colour, shared by its rows
+  top.forEach((x, i) => out.push({ v: x.v, st: sty(fT ? fT[i] : x.fill || (x.old ? MS_OLD : MS_LATE)), fx: true, shared: 1 }));
+  main.forEach((x, i) => out.push({ v: x.v, st: sty(fM ? fM[i] : rowFill), fx: true, shared: 1 }));
   const put = (r, o) => {
     const row = ws.getRow(r);
-    for (let c = 1; c <= MS_N; c++) { const cell = row.getCell(c); cell.value = null; cell.style = JSON.parse(JSON.stringify(o.st[c - 1] || {})); if (c <= 21 && o.v[c - 1] != null) cell.value = o.v[c - 1]; }
+    for (let c = 1; c <= MS_N; c++) { const cell = row.getCell(c); cell.value = null; cell.style = o.shared ? o.st[c - 1] : JSON.parse(JSON.stringify(o.st[c - 1] || {})); if (c <= 21 && o.v[c - 1] != null) cell.value = o.v[c - 1]; }
     if (o.fx) { row.getCell(22).value = { formula: P.fV(r) }; row.getCell(23).value = { formula: P.fW(r) }; }
     row.height = o.h;
   };
@@ -3321,7 +3342,7 @@ function msVals(rec, P) {
   const f = rec.f, txt = v => v === '' || v == null ? null : P.text ? v : /^\d+$/.test(v) ? +v : v, n = v => v === '' || v == null ? null : v === '-' ? '-' : msC(v) / 100;
   const v = new Array(21).fill(null);
   v[0] = f[0]; v[2] = rec.amtC / 100; v[4] = new Date(rec.date); v[6] = txt(f[3]); v[12] = +f[6] || txt(f[6]); v[14] = txt(f[7]); v[16] = f[8];
-  if (rec.kind === 'C') { v[8] = txt(f[4]); v[10] = txt(f[5]); v[18] = f[9]; v[20] = n(f[10]); }
+  if (rec.kind !== 'D') { v[8] = txt(f[4]); v[10] = txt(f[5]); v[18] = f[9]; v[20] = n(f[10]); }
   else if (P.debit === 'name') { v[10] = txt(f[9]); v[18] = f[10]; v[20] = n(f[11]); }
   else { v[8] = n(f[4]); v[10] = txt(f[5]); v[18] = txt(f[9]); v[20] = txt(f[10]); }
   return v;
@@ -3331,21 +3352,22 @@ function msVals(rec, P) {
 function msProfile(wb, I, mer) {
   const saved = MS.prof[mer] || {}, ws = wb.getWorksheet('credit') || wb.getWorksheet('MIX');
   const P = { text: I.text != null ? I.text : saved.text != null ? saved.text : true, debit: I.debit || saved.debit || 'pos', tint: I.tint != null ? I.tint : !!saved.tint };
-  let dr = 0, br = 0, fv = null, fw = null;
+  let dr = 0, br = 0, er = 0, fv = null, fw = null;
   for (const sn of MS_SHEETS) {
     const w = wb.getWorksheet(sn); if (!w) continue;
     for (let r = 2, L = msLast(w); r <= L; r++) {
       const a = msTxt(w.getCell(r, 1).value).trim(), v = w.getCell(r, 22).value, x = w.getCell(r, 23).value;
       if (!fv && v && typeof v === 'object' && typeof v.formula === 'string') fv = v.formula;
       if (!fw && x && typeof x === 'object' && typeof x.formula === 'string') fw = x.formula;
-      if (w === ws && a) { if (/^WEEK\s+\d/i.test(a)) br = r; else if (![MS_LATE, MS_OLD].includes(msArgb(w.getCell(r, 1)))) dr = r; }
+      if (w === ws && a) { if (MS_BRE.test(a)) br = r; else if (![MS_LATE, MS_OLD].includes(msArgb(w.getCell(r, 1)))) dr = r; }
+      if (w === ws && !a && !er && br && v && typeof v === 'object') er = r;
       if (fv && fw && dr && br && w === ws && r > br + 2) break;
     }
   }
   const st = r => { const o = []; for (let c = 1; c <= MS_N; c++) o.push(JSON.parse(JSON.stringify(ws.getCell(r, c).style || {}))); return o; };
-  const hdr = () => st(1).map(s => ({ ...s, fill: undefined, font: { ...(s.font || {}), bold: false } }));
-  P.ds = dr ? st(dr) : saved.ds || hdr(); P.bs = br ? st(br) : saved.bs || P.ds.map(s => ({ ...s, font: { ...(s.font || {}), bold: true } }));
-  if (!dr && !saved.ds) { P.ds[4].numFmt = 'dd/mm/yyyy'; P.ds[2].numFmt = '0.00'; P.ds[20].numFmt = '0.00'; }
+  const hdr = () => st(1).map(s => ({ ...s, fill: undefined, font: { ...(s.font || {}), bold: false, color: undefined } }));
+  P.ds = dr ? st(dr) : er ? st(er) : saved.ds || hdr(); P.bs = br ? st(br) : saved.bs || P.ds.map(s => ({ ...s, font: { ...(s.font || {}), bold: true } }));
+  if (!dr && !er && !saved.ds) { P.ds[4].numFmt = 'dd/mm/yyyy'; P.ds[2].numFmt = '0.00'; P.ds[20].numFmt = '0.00'; }
   fv = fv || saved.fv || 'IF(Q2="","",IFERROR(VLOOKUP(Q2,CardType!A:B,2,FALSE()),"TIADA DALAM LIST"))';
   fw = fw || saved.fw || 'IF(M2="","",IFERROR(VLOOKUP(M2,\'TID MID COHERENT\'!A:B,2,FALSE()),""))';
   const row = f => r => f.replace(/(\$?)([A-Z]{1,2})\$?\d+(?![\d(])/g, (m, d, c) => `${c}${r}`);
@@ -3363,9 +3385,9 @@ async function msBuild() {
   for (const w of PL.weeks) {
     const ex = Object.values(I.banners).flat().find(b => b.mon === w.mon);
     const color = ex && ex.argb || MS_PAL.find(c => !used.has(c)) || MS_PAL[w.mon / 864e5 % MS_PAL.length | 0]; used.add(color);
-    const ctx = { prof, color, month: PL.month }, o = { label: w.label };
+    const ctx = { prof, color, month: PL.month, monthly: PL.monthly, pal: I.pal }, o = { label: w.label };
     for (const sn of MS_SHEETS) {
-      const ws = wb.getWorksheet(sn), recs = sn === 'credit' ? w.C : sn === 'debit' ? w.D : [...w.C, ...w.D];
+      const ws = wb.getWorksheet(sn), X = I.amex ? [] : w.X, recs = sn === 'credit' ? [...w.C, ...X] : sn === 'debit' ? w.D : sn === 'AMEX' ? w.X : [...w.C, ...X, ...w.D];
       if (ws && recs.length) o[sn] = msWrite(ws, w.mon, recs, ctx);
     }
     res.push(o);
@@ -3400,11 +3422,11 @@ EXT.ingest.push(async (file, wb, names, chip) => {
 });
 EXT.report.push(async (file, tables, text, chip) => {
   const raw = new TextDecoder('utf-8').decode(await file.arrayBuffer());
-  if (!/Report Type\s*:\s*,\s*DVS04[AE]/i.test(raw)) return null;
+  if (!/Report Type\s*:\s*,\s*(DVS04[AE]|T41AX)/i.test(raw)) return null;
   const x = msParseCsv(raw, file.name);
   MS.csv = MS.csv.filter(y => y.name !== x.name).concat(x);
   const ok = x.totC == null || x.totC === x.rows.reduce((a, r) => a + r.amtC, 0);
-  Object.assign(chip, { kind: x.kind === 'C' ? 'Merchant CSV credit (DVS04A)' : 'Merchant CSV debit (DVS04E)', ok: true, module: 'M', note: `${msD(x.rep)} · ${x.rows.length} transaksi · RM${fmtC(x.rows.reduce((a, r) => a + r.amtC, 0))}${ok ? '' : ' · JUMLAH TAK SAMA DENGAN CSV'}` });
+  Object.assign(chip, { kind: { C: 'Merchant CSV credit (DVS04A)', D: 'Merchant CSV debit (DVS04E)', X: 'Merchant CSV AMEX (T41AX)' }[x.kind], ok: true, module: 'M', note: `${msD(x.rep)} · ${x.rows.length} transaksi · RM${fmtC(x.rows.reduce((a, r) => a + r.amtC, 0))}${ok ? '' : ' · JUMLAH TAK SAMA DENGAN CSV'}` });
   return chip;
 });
 EXT.load.push(async () => { MS.prof = await DB.get('msProf', null) || {}; MS.names = await DB.get('msNames', null) || {}; });
@@ -3415,20 +3437,22 @@ EXT.render.M = function renderM() {
   const I = MS.info, PL = msPlan(), money = c => 'RM' + fmtC(c), sum = a => a.reduce((x, r) => x + r.amtC, 0);
   let h = `<section class="card"><h3>Merchant Statement <span class="pill">${MS.wb ? esc(MS.wb.name) : 'fail bulan belum diseret'}</span></h3>`;
   if (!MS.wb) h += `<p class="hint bad">Seret juga fail <b>Merchant statement tool</b> bulan ini (.xlsx) — data minggu ini akan disambung ke dalamnya.</p>`;
-  else h += `<p class="hint">Bulan: <b>${PL.month ? MS_MON[PL.month % 100 - 1] + ' ' + Math.floor(PL.month / 100) : '?'}</b>${I.monthGuess ? ' (dari nama fail)' : ''} · ${I.data} transaksi credit sedia ada · format nombor: <b>${I.text === false ? 'nombor' : 'teks (kekal sifar depan)'}</b> · lajur debit: <b>${(I.debit || 'pos') === 'name' ? 'ikut nama lajur' : 'ikut kedudukan CSV'}</b> · warna baris: <b>${I.tint ? 'lebih cerah dari banner' : 'sama dengan banner'}</b> — semua ikut fail ini.</p>`;
+  else h += `<p class="hint">Bulan: <b>${PL.month ? MS_MON[PL.month % 100 - 1] + ' ' + Math.floor(PL.month / 100) : '?'}</b>${I.monthGuess ? ' (dari nama fail)' : ''} · ${I.data} transaksi credit sedia ada · format nombor: <b>${I.text === false ? 'nombor' : 'teks (kekal sifar depan)'}</b> · lajur debit: <b>${(I.debit || 'pos') === 'name' ? 'ikut nama lajur' : 'ikut kedudukan CSV'}</b> · susunan: <b>${I.monthly ? 'satu blok sebulan, warna selang-seli ikut hari' : 'blok mingguan, ' + (I.tint ? 'baris lebih cerah dari banner' : 'baris sama warna banner')}</b>${I.amex ? ' · AMEX (T41AX) → sheet AMEX' : ''} — semua ikut fail ini.</p>`;
   if (PL.other.length) h += `<p class="hint bad">${PL.other.length} CSV bukan bulan ini (${PL.other.map(x => msD(x.rep)).join(', ')}) — tidak dimasukkan. Seret bersama fail bulan tersebut.</p>`;
-  if (PL.weeks.length) h += `<div class="scroll"><table class="t dense"><tr><th>Minggu</th><th class="r">Credit</th><th class="r">Debit</th><th class="r">MIX</th><th class="r">Lewat / bulan lain<br><small>(atas blok)</small></th><th class="r">Sudah ada<br><small>(dilangkau)</small></th><th>Hari tiada CSV</th></tr>${PL.weeks.map(w => `<tr><td><b>${esc(w.label)}</b></td><td class="r">${w.C.length} · ${money(sum(w.C))}</td><td class="r">${w.D.length} · ${money(sum(w.D))}</td><td class="r">${w.C.length + w.D.length} · ${money(sum(w.C) + sum(w.D))}</td><td class="r">${w.late}</td><td class="r">${w.dup}</td><td>${w.miss.C.length ? 'credit ' + w.miss.C.join(', ') : ''}${w.miss.C.length && w.miss.D.length ? '<br>' : ''}${w.miss.D.length ? 'debit ' + w.miss.D.join(', ') : ''}${!w.miss.C.length && !w.miss.D.length ? '<span class="tag ok">lengkap</span>' : ''}</td></tr>`).join('')}</table></div>`;
-  if (PL.weeks.some(w => w.miss.C.length || w.miss.D.length)) h += `<p class="hint">Hari tiada CSV: semak sama ada bank memang tiada transaksi hari itu atau fail tertinggal.</p>`;
+  const hasX = PL.weeks.some(w => w.X.length || w.reps.X.size), KN = { C: 'credit', D: 'debit', X: 'AMEX' };
+  if (PL.weeks.length) h += `<div class="scroll"><table class="t dense"><tr><th>${PL.monthly ? 'Bulan' : 'Minggu'}</th><th class="r">Credit</th><th class="r">Debit</th>${hasX ? '<th class="r">AMEX</th>' : ''}<th class="r">MIX</th><th class="r">Lewat / bulan lain<br><small>(atas blok)</small></th><th class="r">Sudah ada<br><small>(dilangkau)</small></th><th>Hari tiada CSV</th></tr>${PL.weeks.map(w => { const mixR = I && I.amex ? [...w.C, ...w.D] : [...w.C, ...w.X, ...w.D], miss = Object.keys(w.miss).filter(k => w.miss[k].length); return `<tr><td><b>${esc(w.label)}</b></td><td class="r">${w.C.length} · ${money(sum(w.C))}</td><td class="r">${w.D.length} · ${money(sum(w.D))}</td>${hasX ? `<td class="r">${w.X.length} · ${money(sum(w.X))}</td>` : ''}<td class="r">${mixR.length} · ${money(sum(mixR))}</td><td class="r">${w.late}</td><td class="r">${w.dup}</td><td>${miss.map(k => `${KN[k]} ${w.miss[k].join(', ')}`).join('<br>') || '<span class="tag ok">lengkap</span>'}</td></tr>`; }).join('')}</table></div>`;
+  if (PL.weeks.some(w => Object.values(w.miss).some(m => m.length))) h += `<p class="hint">Hari tiada CSV: semak sama ada bank memang tiada transaksi hari itu atau fail tertinggal.</p>`;
   h += `</section>`;
   if (PL.newT.length || PL.newC.length) {
     h += `<section class="card"><h3>Operator / Card Type baru <span class="pill">${PL.newT.length + PL.newC.length}</span></h3><p class="hint">Terminal (TID) ini belum ada dalam sheet <b>TID MID COHERENT</b> — isi nama operator supaya lajur Company tidak kosong. Ia akan ditambah ke sheet itu dan diingat untuk bulan seterusnya.</p>`;
+    if (PL.newT.length > 1) h += `<div class="row"><label class="fld">Isi semua TID yang masih kosong dengan<input class="in w" list="ms-comp" id="msAll" placeholder="nama operator"></label><button class="btn sm" data-act="msall">Isi</button></div>`;
     if (PL.newT.length) h += `<table class="t dense"><tr><th>TID</th><th class="r">Transaksi</th><th>Operator (Company)</th></tr>${PL.newT.map(([t, n]) => `<tr><td>${esc(t)}</td><td class="r">${n}</td><td><input class="in w" list="ms-comp" data-act="msname" data-v="${esc(t)}" value="${esc(MS.names[t] || '')}" placeholder="cth. ${esc((I.comp || [])[0] || 'NAMA OPERATOR')}"></td></tr>`).join('')}</table><datalist id="ms-comp">${(I.comp || []).map(c => `<option value="${esc(c)}">`).join('')}</datalist>`;
     if (PL.newC.length) h += `<table class="t dense"><tr><th>Card Type baru</th><th class="r">Transaksi</th><th>Description</th></tr>${PL.newC.map(([t, n]) => `<tr><td>${esc(t)}</td><td class="r">${n}</td><td><select class="in" data-act="mstype" data-v="${esc(t)}">${['LOCAL', 'FOREIGN'].map(o => `<option ${(MS.types[t] || msGuessType(t)) === o ? 'selected' : ''}>${o}</option>`).join('')}</select></td></tr>`).join('')}</table>`;
     h += `</section>`;
   }
   const cs = MS.csv.slice().sort((a, b) => (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) || a.rep - b.rep);
   h += `<section class="card"><h3>Semakan CSV <span class="pill">${cs.length} fail</span></h3><div class="scroll"><table class="t dense"><tr><th>Fail</th><th>Jenis</th><th>Report</th><th class="r">Transaksi</th><th class="r">Jumlah baris</th><th class="r">Total Debit Amount (CSV)</th><th></th></tr>${cs.map(x => { const s = sum(x.rows), ok = (x.totC == null || x.totC === s) && (!x.items || x.items === x.rows.length); return `<tr><td>${esc(x.name)}</td><td>${x.kind === 'C' ? 'credit' : 'debit'}</td><td>${x.rep ? msD(x.rep) : '?'}</td><td class="r">${x.rows.length}</td><td class="r">${fmtC(s)}</td><td class="r">${x.totC == null ? '-' : fmtC(x.totC)}</td><td>${ok ? '<span class="tag ok">padan</span>' : '<span class="tag bad">tak padan</span>'}</td></tr>`; }).join('')}</table></div>
-  <div class="actions">${MS.wb && PL.weeks.some(w => w.C.length || w.D.length) ? `<button class="btn pri" data-act="msdl">⬇ ${esc(fname(msOutName()))}</button>` : ''}${MS.wb ? `<button class="btn" data-act="mstpl">⬇ Template kosong bulan depan</button>` : ''}<span class="sp"></span><button class="btn sm" data-act="msclr">Kosongkan senarai Merchant</button></div></section>`;
+  <div class="actions">${MS.wb && PL.weeks.some(w => w.C.length || w.D.length || w.X.length) ? `<button class="btn pri" data-act="msdl">⬇ ${esc(fname(msOutName()))}</button>` : ''}${MS.wb ? `<button class="btn" data-act="mstpl">⬇ Template kosong bulan depan</button>` : ''}<span class="sp"></span><button class="btn sm" data-act="msclr">Kosongkan senarai Merchant</button></div></section>`;
   panel().innerHTML = h;
 };
 
@@ -3440,6 +3464,7 @@ document.addEventListener('click', async e => {
     await busy('Menyambung minggu ke fail bulan…', async () => { const { blob, res } = await msBuild(); saveBlob(msOutName(), blob); toast(res.map(o => `${o.label}: ${MS_SHEETS.map(s => o[s] ? `${s} +${o[s].added}` : '').filter(Boolean).join(' · ')}`).join(' | ')); });
   }
   else if (a === 'mstpl') await busy('Menyediakan template…', async () => { const t = await msTemplate(); saveBlob(t.name, t.blob); });
+  else if (a === 'msall') { const v = clean(($('#msAll') || {}).value || ''); if (!v) return; msPlan().newT.forEach(([t]) => { if (!clean(MS.names[t] || '')) MS.names[t] = v; }); await DB.set('msNames', MS.names); renderAll(); }
   else if (a === 'msclr') { MS.wb = null; MS.info = null; MS.csv = []; S.files = (S.files || []).filter(c => c.module !== 'M'); renderAll(); }
 });
 document.addEventListener('change', async e => {
