@@ -1983,11 +1983,11 @@ async function genKlia(P, code, kind) {
       if (C.items[i][2]) ['B', 'C', 'E', 'F'].forEach(k => { const c = ws.getCell(k + rr); c.font = { ...(c.font || {}), color: { argb: 'FFFF0000' }, bold: true }; });
     });
     if (!n) { ws.getCell('R' + s).value = null; }
-    ['C', 'D', 'E'].forEach(k => cp(k + tot, k + s)); ws.mergeCells(`C${tot}:D${tot}`);
+    ['B', 'C', 'D', 'E', 'F'].forEach(k => { cp(k + tot, k + s).value = null; }); ws.mergeCells(`C${tot}:D${tot}`);
     ctr(ws.getCell('C' + tot)).value = 'TOTAL'; ['C', 'E'].forEach(k => { const c = ws.getCell(k + tot); c.font = { ...(c.font || {}), bold: true }; });
     const td = ctr(ws.getCell('E' + tot)); td.value = fx(`SUM(E${s + 1}:E${tot - 1})`, C.items.reduce((a, x) => a + x[3], 0)); td.numFmt = '0';
     rows(ws, LT, M.less, M.sign - 1, less);
-    cp('F' + less, 'E' + less); { const e = ws.getCell('E' + less), B = { style: 'thin' }; e.style = {}; e.value = null; e.border = { top: B, left: B, bottom: B, right: B }; }
+    cp('F' + less, 'E' + less); { const e = cp('E' + less, 'F' + less), B = { style: 'thin' }; e.value = null; e.border = { top: B, left: B, bottom: B, right: B }; }
     ws.getCell('F' + less).value = n ? fx(`SUMPRODUCT(E${s + 1}:E${tot - 1},F${s + 1}:F${tot - 1})`, C.loanC / 100) : 0;
     r = less + (M.sign - M.less);
   } else if (!C.inb.length) r = t + 2;
