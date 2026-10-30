@@ -1967,28 +1967,28 @@ async function genKlia(P, code, kind) {
   } else if (L.type === 'list') {
     // own loan-block format per operator when available (e.g. SUNLIGHT uses Arial + its own row heights)
     const LT = KTPL['KL_' + code] || KTPL.KL, M = LT.meta, s = r + 1, n = C.items.length, tot = s + 1 + n, less = tot + 1, tn = M.last - M.first + 1;
-    rows(ws, LT, M.hdr - 1, M.hdr, r, { skipMerge: m => m === `C${M.hdr}:D${M.hdr}` });
-    { const h = ws.getCell('D' + s); h.style = clone(ws.getCell('E' + s).style); h.value = 'NO.\nDeduction day'; h.alignment = { ...(h.alignment || {}), horizontal: 'center', vertical: 'middle', wrapText: true };
-      const e = ws.getCell('E' + s); e.value = 'Daily\nrepayment'; e.alignment = { ...(e.alignment || {}), horizontal: 'center', vertical: 'middle', wrapText: true }; ws.getRow(s).height = Math.max(ws.getRow(s).height || 0, 30); }
-    ws.getCell('S' + s).value = fx(`-E${less}`, -C.loanC / 100);
+    // layout: B No. | C:D Name (merged, full width) | E NO. Deduction day | F Daily repayment;  TOTAL (days) ;  Less: = Σ days × daily (0 days = not deducted)
+    rows(ws, LT, M.hdr - 1, M.hdr, r);
+    const cp = (to, from) => { const c = ws.getCell(to); c.style = clone(ws.getCell(from).style); return c; }, ctr = c => { c.alignment = { ...(c.alignment || {}), horizontal: 'center', vertical: 'middle', wrapText: true }; return c; };
+    cp('F' + s, 'E' + s); ctr(ws.getCell('E' + s)).value = 'NO.\nDeduction day'; ctr(ws.getCell('F' + s)).value = 'Daily\nrepayment'; ws.getRow(s).height = Math.max(ws.getRow(s).height || 0, (ws.getRow(s + 1).height || 46) * 1.6);
+    ws.getCell('S' + s).value = fx(`-F${less}`, -C.loanC / 100);
     C.items.forEach(([nm, daily, , days], i) => {
       const rr = s + 1 + i, src = i === n - 1 && n > 1 ? M.last : M.first + Math.min(i, tn - 2);
       rows(ws, LT, src, src, rr);
       ['R', 'S', 'Q'].forEach(k => { if (i) ws.getCell(k + rr).value = null; });
       if (i === 0) { rows(ws, LT, M.first, M.first, rr); ws.getCell('S' + rr).value = fx(`S${totRef}+S${s}`, C.bankC / 100); }
-      ws.getCell('B' + rr).value = i + 1; ws.getCell('C' + rr).value = nm; ws.getCell('E' + rr).value = daily;
-      { const d = ws.getCell('D' + rr); d.style = clone(ws.getCell('B' + rr).style); d.value = days; }
-      if (C.items[i][2]) ['B', 'C', 'D', 'E'].forEach(k => { const c = ws.getCell(k + rr); c.font = { ...(c.font || {}), color: { argb: 'FFFF0000' }, bold: true }; });
+      cp('F' + rr, 'E' + rr); cp('D' + rr, 'C' + rr); ws.mergeCells(`C${rr}:D${rr}`);
+      ws.getCell('B' + rr).value = i + 1; ws.getCell('C' + rr).value = nm;
+      const d = cp('E' + rr, 'B' + rr); d.value = days; ctr(d); ws.getCell('F' + rr).value = daily;
+      if (C.items[i][2]) ['B', 'C', 'E', 'F'].forEach(k => { const c = ws.getCell(k + rr); c.font = { ...(c.font || {}), color: { argb: 'FFFF0000' }, bold: true }; });
     });
     if (!n) { ws.getCell('R' + s).value = null; }
-    // TOTAL row (days), then "Less:" = Σ days × daily repayment (0 days = no deduction)
-    ['B', 'C', 'D', 'E'].forEach(k => { const c = ws.getCell(k + tot); c.style = clone(ws.getCell(k + s).style); c.value = null; });
-    ws.getCell('C' + tot).value = 'TOTAL'; ws.getCell('B' + tot).border = {}; ws.getCell('B' + tot).fill = undefined; ws.getCell('E' + tot).fill = undefined;
-    ws.getCell('D' + tot).value = fx(`SUM(D${s + 1}:D${tot - 1})`, C.items.reduce((a, x) => a + x[3], 0)); ws.getCell('D' + tot).numFmt = '0';
+    ['C', 'D', 'E'].forEach(k => cp(k + tot, k + s)); ws.mergeCells(`C${tot}:D${tot}`);
+    ctr(ws.getCell('C' + tot)).value = 'TOTAL'; ['C', 'E'].forEach(k => { const c = ws.getCell(k + tot); c.font = { ...(c.font || {}), bold: true }; });
+    const td = ctr(ws.getCell('E' + tot)); td.value = fx(`SUM(E${s + 1}:E${tot - 1})`, C.items.reduce((a, x) => a + x[3], 0)); td.numFmt = '0';
     rows(ws, LT, M.less, M.sign - 1, less);
-    { const lb = ws.getCell('D' + less); ws.getCell('C' + less).style = clone(lb.style); ws.getCell('C' + less).value = lb.value; lb.style = {}; lb.value = null;
-      const B = { style: 'thin' }; lb.border = { top: B, left: B, bottom: B, right: B }; }
-    ws.getCell('E' + less).value = n ? fx(`SUMPRODUCT(D${s + 1}:D${tot - 1},E${s + 1}:E${tot - 1})`, C.loanC / 100) : 0;
+    cp('F' + less, 'E' + less); { const e = ws.getCell('E' + less), B = { style: 'thin' }; e.style = {}; e.value = null; e.border = { top: B, left: B, bottom: B, right: B }; }
+    ws.getCell('F' + less).value = n ? fx(`SUMPRODUCT(E${s + 1}:E${tot - 1},F${s + 1}:F${tot - 1})`, C.loanC / 100) : 0;
     r = less + (M.sign - M.less);
   } else if (!C.inb.length) r = t + 2;
   // ---- signatures
