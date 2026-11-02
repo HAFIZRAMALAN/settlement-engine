@@ -1252,8 +1252,8 @@ function computeC(st) {
     return { d: dd, t, sales, proc, tot, comm, sc, mdr: -mdr, sm, net: tot + comm + sc - mdr + sm };
   });
   const sum = k => don.reduce((a, x) => a + x[k], 0);
-  const gOn = { t: sum('t'), sales: sum('sales'), proc: sum('proc'), tot: sum('tot'), comm: sum('comm'), sc: sum('sc'), mdr: sum('mdr') };
-  gOn.sm = -rate(-gOn.mdr, sstP); gOn.net = gOn.tot + gOn.comm + gOn.sc + gOn.mdr + gOn.sm;
+  const gOn = { t: sum('t'), sales: sum('sales'), proc: sum('proc'), tot: sum('tot'), comm: sum('comm'), sc: sum('sc'), mdr: sum('mdr'), sm: sum('sm') };
+  gOn.net = gOn.tot + gOn.comm + gOn.sc + gOn.mdr + gOn.sm;
   const dag = days.map(dd => {
     const bs = ag.filter(b => b.pdate && dKey(b.pdate) === dKey(dd)); const t = bs.reduce((a, b) => a + b.tickets, 0), comm = t * commU, sst = rate(comm, sstP);
     return { d: dd, t, comm, sst, tot: comm + sst };
@@ -1273,8 +1273,8 @@ function computeC(st) {
     ok ? agOK++ : agBad.push(b);
   });
   const sysOn = (R.onTotals.find(t => t.station === st) || {}), sysAg = (R.agTotals.find(t => t.station === st) || {});
-  const sysNet = cc(sysOn.net), sysAgT = cc(sysAg.total);
-  return { st, on, ag, from, to, days, don, dag, gOn, gAg, bf, diff, rec, nu, np, cf, onOK, onBad, agOK, agBad, sysNet, sysAgT, hasSys: !!(R.onTotals.find(t => t.station === st)), sysOn, sysAg, difNet: gOn.net - sysNet, difAg: gAg.tot - sysAgT };
+  const sysNet = cc(sysOn.net), sysAgT = cc(sysAg.total), bkNet = on.reduce((a, b) => a + cc(b.net), 0), bkAgT = ag.reduce((a, b) => a + cc(b.total), 0);
+  return { st, on, ag, from, to, days, don, dag, gOn, gAg, bf, diff, rec, nu, np, cf, onOK, onBad, agOK, agBad, sysNet, sysAgT, hasSys: !!(R.onTotals.find(t => t.station === st)), sysOn, sysAg, difNet: gOn.net - sysNet, difAg: gAg.tot - sysAgT, bkNet, bkAgT, difBk: gOn.net - bkNet, difBkAg: gAg.tot - bkAgT };
 }
 const stampC = d => `${pad(d.d)}_${pad(d.m)}`;
 
@@ -1456,10 +1456,9 @@ async function genMasterlist(st) {
     sty(ws, 'J' + rr, TS, S1('J'), fx(`IF($A${rr}="","",E${rr}+SUM(F${rr}:I${rr}))`, w('net')));
   }
   if (TS.rows[23]) ws.getRow(gtOn).height = TS.rows[23].h;
-  const g = C.gOn, gv = { B: g.t, C: g.sales / 100, D: g.proc / 100, E: g.tot / 100, F: g.comm / 100, G: g.sc / 100, H: g.mdr / 100 };
+  const g = C.gOn, gv = { B: g.t, C: g.sales / 100, D: g.proc / 100, E: g.tot / 100, F: g.comm / 100, G: g.sc / 100, H: g.mdr / 100, I: g.sm / 100 };
   sty(ws, 'A' + gtOn, TS, 'A23', 'Grand Total');
-  ['B', 'C', 'D', 'E', 'F', 'G', 'H'].forEach(c => sty(ws, c + gtOn, TS, c + '23', fx(`SUM(${c}16:${c}${gtOn - 1})`, gv[c])));
-  sty(ws, 'I' + gtOn, TS, 'I23', fx(`-ROUND(-H${gtOn}*$B$9,2)`, g.sm / 100));
+  ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'].forEach(c => sty(ws, c + gtOn, TS, c + '23', fx(`SUM(${c}16:${c}${gtOn - 1})`, gv[c])));
   sty(ws, 'J' + gtOn, TS, 'J23', fx(`E${gtOn}+SUM(F${gtOn}:I${gtOn})`, g.net / 100));
   const a0 = 26 + o1; ws.getCell('A' + (a0 + 1)).value = st;
   const ag0 = a0 + 5, gtAg = ag0 + nd;
@@ -1491,10 +1490,14 @@ async function genMasterlist(st) {
   ws.getCell('C' + c52).value = fx(`C${c49}+C${c50}+C${c51}`, C.cf / 100);
   for (let rr = s0 + 7; rr <= c52; rr++) ws.getRow(rr).hidden = true;
   const kb = s0 + 1;
-  ws.getCell('J' + kb).value = fx(`SUMIFS(${rg(O, oL('net'), endOn)},${rg(O, 'A', endOn)},"${label} Total")`, C.sysNet / 100);
-  ws.getCell('J' + (kb + 1)).value = fx(`ROUND(J${gtOn}-J${kb},2)`, Math.round(C.difNet) / 100);
-  ws.getCell('J' + (kb + 2)).value = fx(`SUMIFS(${rg(A, aL('tot'), endAg)},${rg(A, 'A', endAg)},"${label} Total")`, C.sysAgT / 100);
-  ws.getCell('J' + (kb + 3)).value = fx(`ROUND(E${gtAg}-J${kb + 2},2)`, Math.round(C.difAg) / 100);
+  ws.getCell('H' + kb).value = 'Online NET - sum of every booking (system)';
+  ws.getCell('J' + kb).value = fx(`SUMIFS(${rg(O, oL('net'), endOn)},${oSt},"${st}")`, C.bkNet / 100);
+  ws.getCell('H' + (kb + 1)).value = 'Difference (SST rounded per day - few sen OK)';
+  ws.getCell('J' + (kb + 1)).value = fx(`ROUND(J${gtOn}-J${kb},2)`, Math.round(C.difBk) / 100);
+  ws.getCell('H' + (kb + 2)).value = 'Agent charge - sum of every booking (system)';
+  ws.getCell('J' + (kb + 2)).value = fx(`SUMIFS(${rg(A, aL('tot'), endAg)},${aSt},"${st}")`, C.bkAgT / 100);
+  ws.getCell('H' + (kb + 3)).value = 'Difference (SST rounded per day - few sen OK)';
+  ws.getCell('J' + (kb + 3)).value = fx(`ROUND(E${gtAg}-J${kb + 2},2)`, Math.round(C.difBkAg) / 100);
   const chk = (rng, stc, ok, bad) => fx(`IF(COUNTIFS(${rng},"CHECK",${stc},"${st}")>0,COUNTIFS(${rng},"CHECK",${stc},"${st}")&" CHECK",COUNTIFS(${rng},"OK",${stc},"${st}")&" OK")`, bad ? `${bad} CHECK` : `${ok} OK`);
   ws.getCell('J' + (kb + 4)).value = chk(rg(O, onH(10), endOn), oSt, C.onOK, C.onBad.length);
   ws.getCell('J' + (kb + 5)).value = chk(rg(A, agH(6), endAg), aSt, C.agOK, C.agBad.length);
@@ -1506,12 +1509,12 @@ async function genMasterlist(st) {
     `ONLINE: NSS collects ticket sales + ${set.proc}% processing fee; deducts commission RM${set.comm}/ticket + SST ${set.sst}%, MDR ${set.mdr}% + SST ${set.sst}%.`,
     `AGENT: ticket money is not collected by NSS. NSS charges commission RM${set.comm}/ticket + SST ${set.sst}% only.`,
     `Agent charge is deducted from the online NET to get NET PAYABLE. Tickets exclude infants (${[...new Set(R.onCats.concat(R.agCats).filter(isInfant))].join(', ') || 'none'}).`,
-    'Processing fee, commission & MDR = sum of each booking (per system). Grand Total SST on MDR is on total MDR, same as system Total row (may differ RM0.01 from sum of days).',
+    'Processing fee, commission & MDR = sum of each booking (per system). SST = ROUND(day amount x 8%) per day, Grand Total = sum of the days (same as SUMMARY SALES). The system rounds SST per booking / on its Total row, so it can differ by a few sen.',
     'UNDERSALES: when NET is negative the operator owes NSS - record the c/f in the tracker. On a later day enter the b/f here; recovery is capped at that day\'s amount.']
     .forEach((t, i) => sty(ws, 'A' + (nt + 1 + i), TS, 'A60', t));
   ws.pageSetup.printArea = `A1:J${nt + 7}`;
   ws.addConditionalFormatting({ ref: `C${c45}`, rules: [{ type: 'expression', formulae: [`C${c45}<0`], style: { font: { color: { argb: 'FFC00000' }, bold: true } } }] });
-  ws.addConditionalFormatting({ ref: `J${kb + 1} J${kb + 3}`, rules: [{ type: 'expression', formulae: [`ABS(J${kb + 1})>0.004`], style: { font: { color: { argb: 'FF9C0006' }, bold: true } } }] });
+  ws.addConditionalFormatting({ ref: `J${kb + 1} J${kb + 3}`, rules: [{ type: 'expression', formulae: [`ABS(J${kb + 1})>0.1`], style: { font: { color: { argb: 'FF9C0006' }, bold: true } } }] });
   ws.addConditionalFormatting({ ref: `J${kb + 4}:J${kb + 5}`, rules: [{ type: 'expression', formulae: [`ISNUMBER(SEARCH("CHECK",J${kb + 4}))`], style: { font: { color: { argb: 'FF9C0006' }, bold: true } } }] });
   fixBorders(ws);
   return wbBlob(wb);
@@ -2915,8 +2918,8 @@ function cSt() {
   el.innerHTML = stations().map(st => {
     const C = computeC(st); if (!C) return `<section class="card"><h3>${st}</h3><p class="muted">Tiada tempahan.</p></section>`;
     const ch = [
-      { ok: C.hasSys && Math.abs(C.difNet) < 1, level: !C.hasSys ? 'warn' : Math.abs(C.difNet) < 1 ? 'ok' : (Math.abs(C.difNet) === 1 ? 'warn' : 'bad'), label: 'Online NET = baris Total sistem', detail: C.hasSys ? `${fmtC(C.gOn.net)} vs ${fmtC(C.sysNet)} (beza ${fmtC(C.difNet)})${Math.abs(C.difNet) === 1 ? ' — pembulatan SST MDR RM0.01 (nota A63)' : ''}` : 'Baris Total sistem tiada' },
-      { ok: C.hasSys && Math.abs(C.difAg) < 1, level: !C.hasSys ? 'warn' : Math.abs(C.difAg) < 1 ? 'ok' : 'bad', label: 'Agent total charge = baris Total sistem', detail: `${fmtC(C.gAg.tot)} vs ${fmtC(C.sysAgT)}` },
+      { ok: Math.abs(C.difBk) <= 10, level: Math.abs(C.difBk) < 1 ? 'ok' : Math.abs(C.difBk) <= 10 ? 'info' : 'bad', label: 'Online NET (SST bundar ikut hari, macam SUMMARY SALES) vs jumlah setiap booking', detail: `${fmtC(C.gOn.net)} vs ${fmtC(C.bkNet)} (beza ${fmtC(C.difBk)} — pembulatan SST)${C.hasSys ? ` · baris Total sistem ${fmtC(C.sysNet)}` : ''}` },
+      { ok: Math.abs(C.difBkAg) <= 10, level: Math.abs(C.difBkAg) < 1 ? 'ok' : Math.abs(C.difBkAg) <= 10 ? 'info' : 'bad', label: 'Agent total charge = jumlah setiap booking', detail: `${fmtC(C.gAg.tot)} vs ${fmtC(C.bkAgT)}${C.hasSys && C.sysAgT !== C.bkAgT ? ` · baris Total sistem ${fmtC(C.sysAgT)}` : ''}` },
       { ok: !C.onBad.length, level: C.onBad.length ? 'bad' : 'ok', label: `Line check Online: ${C.onOK} OK${C.onBad.length ? ' / ' + C.onBad.length + ' CHECK' : ''}`, detail: C.onBad.slice(0, 5).map(b => b.booking).join(', ') },
       { ok: !C.agBad.length, level: C.agBad.length ? 'bad' : 'ok', label: `Line check Agent: ${C.agOK} OK${C.agBad.length ? ' / ' + C.agBad.length + ' CHECK' : ''}`, detail: C.agBad.slice(0, 5).map(b => b.booking).join(', ') }
     ];
