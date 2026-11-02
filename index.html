@@ -59,15 +59,53 @@ details{margin:10px 0}summary{cursor:pointer;color:var(--pri);font-weight:600}
 #busy{position:fixed;inset:0;background:rgba(15,20,40,.45);display:flex;gap:14px;align-items:center;justify-content:center;color:#fff;font-weight:600;z-index:125}#busy[hidden]{display:none}
 .spin{width:28px;height:28px;border:4px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
 
+
+/* ---- front page graphics (pure CSS + inline SVG, no images / libraries) ---- */
+body{background:radial-gradient(1200px 380px at 0% -10%,#e7ecff 0,transparent 60%),radial-gradient(900px 320px at 100% 0%,#dcf7f2 0,transparent 55%),var(--bg);background-attachment:fixed}
+.top{background:rgba(255,255,255,.88);backdrop-filter:saturate(1.4) blur(8px);box-shadow:0 1px 0 var(--line),0 6px 20px rgba(30,41,90,.05)}
+.top::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,#6366f1,#14b8a6,#f59e0b);opacity:.7}
+.logo{box-shadow:0 4px 12px rgba(79,70,229,.35)}
+#tabs button{display:flex;gap:8px;align-items:center;transition:transform .12s,box-shadow .12s,border-color .12s}#tabs button:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(30,41,90,.08);border-color:#c7d2fe}
+#tabs .ti{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-size:15px;flex:none;background:var(--tc,#eef2ff)}
+#tabs button.on .ti{background:rgba(255,255,255,.22)}#tabs button.on{box-shadow:0 6px 16px rgba(37,99,235,.28)}
+#tabs .tn{position:relative}#tabs .tb{position:absolute;top:-6px;right:-8px;background:#16a34a;color:#fff;font-size:10px;font-weight:800;border-radius:99px;padding:0 5px;line-height:15px;box-shadow:0 0 0 2px #fff}
+.drop.hero{position:relative;overflow:hidden;border:1.5px dashed #b4c0e4;background:linear-gradient(120deg,#ffffff 0,#f6f8ff 55%,#f0fdfa 100%);padding:18px 26px;gap:26px;box-shadow:0 10px 30px rgba(30,41,90,.06)}
+.drop.hero::before{content:"";position:absolute;width:260px;height:260px;right:-80px;top:-120px;border-radius:50%;background:radial-gradient(circle,#c7d2fe 0,transparent 70%);opacity:.6;pointer-events:none}
+.drop.hero:hover,.drop.hero.over{border-color:#6366f1;background:linear-gradient(120deg,#fff 0,#eef2ff 55%,#e6fffa 100%)}
+.drop.hero.over{box-shadow:0 0 0 4px #c7d2fe,0 10px 30px rgba(30,41,90,.1)}
+.hart{width:260px;flex:none;height:auto}.hflow{animation:hf 1.1s linear infinite;animation-play-state:paused}.drop.hero:hover .hflow,.drop.hero.over .hflow{animation-play-state:running}@keyframes hf{to{stroke-dashoffset:-20}}
+.heng{transform-origin:150px 58px;transition:transform .3s}.drop.hero:hover .heng{transform:scale(1.06)}.hdocs,.hxl{transition:transform .3s}.drop.hero:hover .hdocs{transform:translateX(3px)}.drop.hero:hover .hxl{transform:translateX(-3px)}
+.htxt{position:relative;min-width:0}.htxt b{display:block;font-size:1.25rem;letter-spacing:-.01em;margin:4px 0 0}.hsub{display:block;color:#475069;font-size:.9rem}.hsub u{color:var(--pri);text-decoration:none;font-weight:600}
+.hbadge{display:inline-block;font-size:.72rem;font-weight:600;color:#0f766e;background:#ccfbf1;border-radius:99px;padding:2px 10px}
+.htxt small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:6px;max-width:900px}.drop.hero:hover small{-webkit-line-clamp:unset}
+.hstat{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.hstat span{font-size:.75rem;background:#fff;border:1px solid var(--line);border-radius:99px;padding:2px 10px;color:#475069}.hstat b{display:inline;font-size:.75rem;color:var(--ink)}
+.drop.hero.mini{padding:10px 20px;gap:16px}.drop.hero.mini .hart{width:150px}.drop.hero.mini small,.drop.hero.mini .hbadge{display:none}.drop.hero.mini .htxt b{font-size:1.02rem;margin:0}
+.card{transition:box-shadow .15s}.card:hover{box-shadow:0 6px 22px rgba(30,41,90,.07)}
+.card h3::before{content:"";width:4px;height:18px;border-radius:4px;background:linear-gradient(#6366f1,#14b8a6);flex:none}
+.stat{position:relative;overflow:hidden;background:linear-gradient(180deg,#fff,#fafbff)}.stat::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#c7d2fe}.stat.hl::before{background:#eab308}.stat.warnc::before{background:#f59e0b}
+.btn{transition:transform .1s,box-shadow .12s,border-color .12s}.btn:hover{transform:translateY(-1px);box-shadow:0 3px 10px rgba(30,41,90,.08)}.btn.pri{background:linear-gradient(135deg,#2563eb,#4f46e5);box-shadow:0 4px 12px rgba(37,99,235,.25)}.btn.ok{background:linear-gradient(135deg,#0f9d6b,#0d9488)}
+.chip{box-shadow:0 1px 3px rgba(30,41,90,.05);animation:cin .25s ease-out}@keyframes cin{from{opacity:0;transform:translateY(4px)}}
+.empty .ico{display:inline-grid;place-items:center;width:64px;height:64px;border-radius:20px;background:linear-gradient(135deg,#eef2ff,#ecfeff);font-size:1.9rem;color:#6366f1;box-shadow:inset 0 0 0 1px #e0e7ff}
+@media(max-width:760px){.hart{display:none}.drop.hero{padding:14px 16px}#tabs .ti{display:none}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 <header class="top">
-  <div class="brand"><div class="logo">SE</div><div><b>Settlement Engine</b><small>NSS IT Solution · semua pemprosesan dalam pelayar anda — fail tidak dihantar ke mana-mana</small></div></div>
+  <div class="brand"><div class="logo"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M4 12h16M4 17h7"/><path d="M15 16l2.5 2.5L22 14"/></svg></div><div><b>Settlement Engine</b><small>NSS IT Solution · semua pemprosesan dalam pelayar anda — fail tidak dihantar ke mana-mana</small></div></div>
   <nav id="tabs"></nav>
 </header>
 <main>
-  <div id="drop" class="drop"><div class="dzi">⬇</div><div><b>Seret semua fail mentah ke sini</b><small>atau klik untuk pilih · Terminal bas (Sales Report, Daily Settlement, Invoice Summary — .xls/.xlsx sistem) · Prolintas PS_*.xlsx · Feri DailySettlementReport (Online + Agent) + tracker · senarai undersales.xlsx · Merchant e-statement (CSV DVS04A/DVS04E + Merchant statement tool.xlsx) — terminal/stesen baharu akan dicipta sebagai projek baharu — jenis & projek dikesan daripada <u>kandungan</u>, bukan nama fail.</small></div><input id="fileIn" type="file" multiple hidden></div>
+  <div id="drop" class="drop hero">
+    <svg class="hart" viewBox="0 0 300 120" aria-hidden="true"><defs><linearGradient id="hg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#14b8a6"/></linearGradient><linearGradient id="hg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#eef2ff"/></linearGradient></defs>
+      <g class="hdocs"><rect x="14" y="30" width="54" height="68" rx="7" fill="#e0e7ff" transform="rotate(-8 41 64)"/><rect x="22" y="24" width="54" height="68" rx="7" fill="url(#hg2)" stroke="#c7d2fe" stroke-width="1.5"/><path d="M31 40h28M31 50h36M31 60h22M31 70h32M31 80h18" stroke="#a5b4fc" stroke-width="3" stroke-linecap="round"/><text x="49" y="111" font-size="9" text-anchor="middle" fill="#64748b" font-family="Segoe UI,Arial">CSV · XLS</text></g>
+      <path class="hflow" d="M86 58h34" stroke="url(#hg1)" stroke-width="3" stroke-dasharray="5 5" stroke-linecap="round"/>
+      <g class="heng"><circle cx="150" cy="58" r="30" fill="url(#hg1)"/><circle cx="150" cy="58" r="30" fill="none" stroke="#c7d2fe" stroke-width="6" opacity=".35"/><path d="M137 58l9 9 17-18" stroke="#fff" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><text x="150" y="111" font-size="9" text-anchor="middle" fill="#64748b" font-family="Segoe UI,Arial">semak automatik</text></g>
+      <path class="hflow" d="M184 58h34" stroke="url(#hg1)" stroke-width="3" stroke-dasharray="5 5" stroke-linecap="round"/>
+      <g class="hxl"><rect x="226" y="24" width="62" height="68" rx="7" fill="#fff" stroke="#99f6e4" stroke-width="1.5"/><rect x="226" y="24" width="62" height="14" rx="7" fill="#14b8a6"/><rect x="226" y="31" width="62" height="7" fill="#14b8a6"/><path d="M226 52h62M226 66h62M226 80h62M247 38v54M267 38v54" stroke="#ccfbf1" stroke-width="1.5"/><rect x="249" y="68" width="16" height="10" rx="2" fill="#fde68a"/><text x="257" y="111" font-size="9" text-anchor="middle" fill="#64748b" font-family="Segoe UI,Arial">Excel siap</text></g>
+    </svg>
+    <div class="htxt"><span class="hbadge">🔒 100% dalam pelayar · fail tidak dihantar ke mana-mana</span><b>Seret semua fail mentah ke sini</b><span class="hsub">atau <u>klik untuk pilih</u> — jenis &amp; projek dikesan sendiri daripada kandungan fail</span>
+      <small>atau klik untuk pilih · Terminal bas (Sales Report, Daily Settlement, Invoice Summary — .xls/.xlsx sistem) · Prolintas PS_*.xlsx · Feri DailySettlementReport (Online + Agent) + tracker · senarai undersales.xlsx · Merchant e-statement (CSV DVS04A/DVS04E + Merchant statement tool.xlsx) — terminal/stesen baharu akan dicipta sebagai projek baharu — jenis & projek dikesan daripada <u>kandungan</u>, bukan nama fail.</small><div class="hstat" id="hstat"></div></div><input id="fileIn" type="file" multiple hidden></div>
   <div id="chips" class="chips"></div>
   <div id="panel"></div>
 </main>
@@ -4710,6 +4748,24 @@ document.addEventListener('change', async e => {
     t.value = '';
   }
 });
+
+
+/* ===== ext: ui.js ===== */
+/* ====================== FRONT PAGE LOOK — tab icons, loaded-file badges, hero state ====================== */
+// Pure DOM/CSS: no images or libraries, so it adds nothing to load or processing time.
+(function () {
+  if (typeof HTMLElement === 'undefined') return;            // headless test harness
+  const ICON = { A: ['🚌', '#e0e7ff'], B: ['🛣️', '#fef3c7'], C: ['⛴️', '#cffafe'], K: ['✈️', '#e0f2fe'], T: ['🚉', '#fce7f3'], E: ['✉️', '#ede9fe'], M: ['💳', '#dcfce7'], X: ['🧩', '#ffedd5'], P: ['🗂️', '#f1f5f9'], L: ['📒', '#fef9c3'] };
+  renderTabs = function () {
+    const n = {}; (S.files || []).forEach(f => { if (f.ok && f.module) n[f.module] = (n[f.module] || 0) + 1; });
+    $('#tabs').innerHTML = TABS.map(([k, nm, sub]) => { const [ic, bg] = ICON[k] || ['📄', '#eef2ff'];
+      return `<button class="${S.tab === k ? 'on' : ''}" data-act="tab" data-v="${k}"><span class="ti" style="--tc:${bg}">${ic}</span><span class="tn"><b>${nm}</b><small>${sub}</small>${n[k] ? `<span class="tb" title="${n[k]} fail dimuatkan">${n[k]}</span>` : ''}</span></button>`; }).join('');
+    const d = $('#drop'), st = $('#hstat'), files = S.files || [];
+    if (d) d.classList.toggle('mini', files.length > 0);
+    if (st) { const ok = files.filter(f => f.ok).length, bad = files.length - ok, mods = new Set(files.filter(f => f.ok).map(f => f.module)).size;
+      st.innerHTML = files.length ? `<span>📄 <b>${ok}</b> fail dibaca</span>${mods ? `<span>🧭 <b>${mods}</b> modul</span>` : ''}${bad ? `<span style="color:#b91c1c">✕ <b>${bad}</b> tidak dikenali</span>` : ''}` : `<span>🚌 Terminal bas</span><span>🛣️ Prolintas</span><span>⛴️ Feri</span><span>✈️ KLIA</span><span>🚉 TBS</span><span>💳 Merchant</span>`; }
+  };
+})();
 
 </script>
 </body>
