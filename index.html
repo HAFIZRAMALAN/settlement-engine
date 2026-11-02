@@ -54,9 +54,9 @@ main{max-width:1280px;margin:0 auto;padding:20px 24px 80px}
 .chk{font-size:.84rem}.x{border:0;background:#fde8e8;color:#b91c1c;border-radius:6px;cursor:pointer;width:24px;height:24px}
 .tag{font-size:.7rem;padding:1px 8px;border-radius:99px;background:#eef2ff}.tag.ok{background:#dcfce7;color:#166534}.tag.warn{background:#fef3c7;color:#92400e}
 details{margin:10px 0}summary{cursor:pointer;color:var(--pri);font-weight:600}
-#toasts{position:fixed;right:20px;bottom:20px;display:grid;gap:8px;z-index:60}
+#toasts{position:fixed;right:20px;bottom:20px;display:grid;gap:8px;z-index:130}
 .toast{background:#1b2236;color:#fff;padding:10px 16px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:420px;transition:.4s}.toast.bad{background:#b91c1c}.toast.warn{background:#b45309}.toast.out{opacity:0;transform:translateY(8px)}
-#busy{position:fixed;inset:0;background:rgba(15,20,40,.45);display:flex;gap:14px;align-items:center;justify-content:center;color:#fff;font-weight:600;z-index:70}#busy[hidden]{display:none}
+#busy{position:fixed;inset:0;background:rgba(15,20,40,.45);display:flex;gap:14px;align-items:center;justify-content:center;color:#fff;font-weight:600;z-index:125}#busy[hidden]{display:none}
 .spin{width:28px;height:28px;border:4px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
 
 </style>
@@ -3533,83 +3533,966 @@ document.addEventListener('change', async e => {
 
 
 /* ===== ext: review.js ===== */
-/* ====================== SEMAK & EDIT — preview every output before it is downloaded ====================== */
-// Intercepts saveBlob (EXT.save). xlsx → sheet preview with editable cells; zip → file list (each xlsx/txt reviewable); txt → editable text.
+/* ====================== SEMAK & EDIT — mini-Excel before every download ====================== */
+// Intercepts saveBlob (EXT.save). xlsx → spreadsheet editor: select cells, type values or =formulas (calculated live), insert / delete
+// rows & columns, colours, number formats, copy / paste, fill down, AutoSum, find & replace, undo / redo, choose sheets & file name.
+// zip → file list (each xlsx / txt reviewable); txt → editable text.
 const RV = { on: true, recent: [] };
+
+/* ---- XF: small Excel formula engine (parse, evaluate against an ExcelJS workbook, move references) ---- */
+const XF = (() => {
+  const colN = s => { let n = 0; for (const ch of s.toUpperCase()) n = n * 26 + ch.charCodeAt(0) - 64; return n; };
+  const colS = n => { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = (n - 1 - m) / 26; } return s; };
+  const addr = (r, c) => colS(c) + r;
+  class Err { constructor(e) { this.e = e; } toString() { return this.e; } }
+  class Unsup extends Error { }
+  const E = { div: new Err('#DIV/0!'), val: new Err('#VALUE!'), ref: new Err('#REF!'), na: new Err('#N/A'), name: new Err('#NAME?'), num: new Err('#NUM!') };
+  const isErr = x => x instanceof Err;
+  const errOf = s => Object.values(E).find(e => e.e === String(s).toUpperCase()) || new Err(String(s));
+  const SER0 = Date.UTC(1899, 11, 30), dser = d => (d.getTime() - SER0) / 864e5, sdate = n => new Date(SER0 + Math.round(n * 864e5));
+
+  /* lexer */
+  const RE_REF = /^(?:(?:'((?:[^']|'')+)'|([A-Za-z_\u00c0-\uffff][\w.\u00c0-\uffff]*))!)?(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d+:\$?\d+)(?![\w(!])/;
+  function lex(f) {
+    const out = []; let i = 0, m;
+    while (i < f.length) {
+      const ch = f[i], rest = f.slice(i);
+      if (/\s/.test(ch)) { i++; continue; }
+      if (ch === '"') { let j = i + 1, s = ''; while (j < f.length) { if (f[j] === '"') { if (f[j + 1] === '"') { s += '"'; j += 2; continue; } break; } s += f[j++]; } out.push({ t: 'str', v: s, p: i, e: j + 1 }); i = j + 1; continue; }
+      if ((m = /^#(?:DIV\/0!|N\/A|VALUE!|REF!|NAME\?|NUM!|NULL!)/i.exec(rest))) { out.push({ t: 'err', v: m[0], p: i, e: i + m[0].length }); i += m[0].length; continue; }
+      if ((m = RE_REF.exec(rest))) { out.push({ t: 'ref', sheet: m[1] != null ? m[1].replace(/''/g, "'") : m[2] || null, a: m[3], p: i, e: i + m[0].length }); i += m[0].length; continue; }
+      if ((m = /^(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+)/.exec(rest))) { out.push({ t: 'num', v: +m[1], p: i, e: i + m[0].length }); i += m[0].length; continue; }
+      if ((m = /^([A-Za-z_][\w.]*)\s*\(/.exec(rest))) { out.push({ t: 'fn', v: m[1].toUpperCase().replace(/^_XLFN\.|^_XLWS\./, ''), p: i, e: i + m[0].length }); i += m[0].length; continue; }
+      if ((m = /^(TRUE|FALSE)(?![\w(])/i.exec(rest))) { out.push({ t: 'bool', v: m[1].toUpperCase() === 'TRUE', p: i, e: i + m[0].length }); i += m[0].length; continue; }
+      if ((m = /^(<=|>=|<>|[-+*/^&=<>%(),;:{}])/.exec(rest))) { out.push({ t: 'op', v: m[1] === ';' ? ',' : m[1], p: i, e: i + m[0].length }); i += m[0].length; continue; }
+      if ((m = /^[A-Za-z_\\][\w.]*/.exec(rest))) { out.push({ t: 'name', v: m[0], p: i, e: i + m[0].length }); i += m[0].length; continue; }
+      throw new Error(`Aksara tak dikenali "${ch}"`);
+    }
+    return out;
+  }
+  const one = s => { const m = /^(\$)?([A-Za-z]{1,3})?(\$)?(\d+)?$/.exec(s); if (!m[2]) return { r: +m[4], ar: !!(m[1] || m[3]), c: null }; return { c: colN(m[2]), ac: !!m[1], r: m[4] ? +m[4] : null, ar: !!m[3] }; };
+  const pref = a => { const [x, y] = a.split(':'); return { p1: one(x), p2: y ? one(y) : null }; };
+  const ser = p => (p.c != null ? (p.ac ? '$' : '') + colS(p.c) : '') + (p.r != null ? (p.ar ? '$' : '') + p.r : '');
+  const qs = n => /^[A-Za-z_][\w.]*$/.test(n) && !/^[A-Za-z]{1,3}\d+$/.test(n) ? n : "'" + n.replace(/'/g, "''") + "'";
+
+  /* parser (Pratt) */
+  const BP = { '=': 1, '<>': 1, '<': 1, '>': 1, '<=': 1, '>=': 1, '&': 2, '+': 3, '-': 3, '*': 4, '/': 4, '^': 5 };
+  function parse(f) {
+    const T = lex(f); let i = 0;
+    const peek = () => T[i], next = () => T[i++], isOp = (t, v) => t && t.t === 'op' && t.v === v;
+    function prim() {
+      const t = next(); if (!t) throw new Error('Formula tak lengkap');
+      if (t.t === 'num' || t.t === 'str' || t.t === 'bool') return { k: 'v', v: t.v };
+      if (t.t === 'err') return { k: 'v', v: errOf(t.v) };
+      if (t.t === 'ref') return { k: 'ref', sheet: t.sheet, ...pref(t.a) };
+      if (t.t === 'fn') {
+        const args = [];
+        if (isOp(peek(), ')')) { next(); return { k: 'fn', n: t.v, args }; }
+        for (;;) {
+          args.push(isOp(peek(), ',') || isOp(peek(), ')') ? { k: 'v', v: null } : expr(0));
+          const s = next(); if (isOp(s, ')')) break; if (!isOp(s, ',')) throw new Error(`Kurungan ")" tiada untuk ${t.v}`);
+        }
+        return { k: 'fn', n: t.v, args };
+      }
+      if (isOp(t, '(')) { const e = expr(0); if (!isOp(next(), ')')) throw new Error('Kurungan ")" tiada'); return e; }
+      if (isOp(t, '{')) { const rows = [[]]; for (;;) { const x = prim(); rows[rows.length - 1].push(x.v); const s = next(); if (isOp(s, '}')) break; if (isOp(s, ',')) continue; throw new Unsup('array'); } return { k: 'v', v: rows }; }
+      if (isOp(t, '-') || isOp(t, '+')) { const e = expr(5); return t.v === '-' ? { k: 'neg', a: e } : e; }
+      if (t.t === 'name') return { k: 'name', n: t.v };
+      throw new Error('Formula tak sah dekat "' + (t.v || '') + '"');
+    }
+    function expr(min) {
+      let a = prim();
+      for (;;) {
+        const t = peek(); if (!t || t.t !== 'op') break;
+        if (t.v === '%') { next(); a = { k: 'pct', a }; continue; }
+        const bp = BP[t.v]; if (!bp || bp <= min) break;
+        next(); a = { k: 'bin', o: t.v, a, b: expr(bp) };
+      }
+      return a;
+    }
+    const ast = expr(0); if (i < T.length) throw new Error('Formula tak sah dekat "' + (T[i].v || T[i].a || '') + '"');
+    return ast;
+  }
+  const PC = new Map(), parsed = f => { let a = PC.get(f); if (!a) { a = parse(f); if (PC.size > 20000) PC.clear(); PC.set(f, a); } return a; };
+
+  /* evaluation */
+  function Ctx(wb) { this.wb = wb; this.memo = new Map(); this.busy = new Set(); this.lr = new Map(); this.bad = new Map(); this.cur = null; this.ac = new Map(); this.ix = new Map(); }
+  const sheetOf = (cx, host, name) => !name ? host : cx.wb.worksheets.find(w => w.name.toLowerCase() === name.toLowerCase());
+  function lastRow(cx, ws) {
+    if (cx && cx.lr.has(ws.id)) return cx.lr.get(ws.id);
+    const R = ws._rows || []; let n = R.length; while (n > 0 && !(R[n - 1] && R[n - 1].hasValues)) n--;
+    if (cx) cx.lr.set(ws.id, n); return n;
+  }
+  function cellVal(cx, ws, r, c) {
+    const cell = ws.findCell(r, c); if (!cell || cell.type === 1) return null;   // 1 = merged slave (Excel sees it empty)
+    const v = cell.value; if (v == null) return null;
+    if (typeof v !== 'object') return v;
+    if (v instanceof Date) return dser(v);
+    if (v.formula != null || v.sharedFormula != null) return fval(cx, ws, cell);
+    if (v.richText) return v.richText.map(x => x.text).join('');
+    if (v.error) return errOf(v.error);
+    if (v.text != null) return typeof v.text === 'string' ? v.text : v.text.richText ? v.text.richText.map(x => x.text).join('') : String(v.text);
+    return null;
+  }
+  const cached = res => res === undefined ? null : res instanceof Date ? dser(res) : res && typeof res === 'object' && res.error ? errOf(res.error) : res;
+  function fval(cx, ws, cell) {
+    const k = ws.id + ':' + cell.row + ':' + cell.col; if (cx.memo.has(k)) return cx.memo.get(k);
+    if (cx.busy.has(k)) { cx.bad.set(k, 'rujukan bulat (circular)'); return 0; }
+    cx.busy.add(k); const prev = cx.cur; cx.cur = { ws, r: cell.row, c: cell.col }; let v;
+    try { v = run1(cx, ws, cell.formula); }
+    catch (e) { v = cached(cell.value.result); cx.bad.set(k, e instanceof Unsup ? 'fungsi ' + e.message + ' belum disokong — guna nilai asal fail' : e.message); if (v == null && !(e instanceof Unsup)) v = E.name; }
+    cx.busy.delete(k); cx.cur = prev; cx.memo.set(k, v); return v;
+  }
+  function run1(cx, ws, f) {
+    const ast = parsed(f);
+    try { const v = ev(cx, ws, ast); return v && v.R ? cellVal(cx, v.ws, v.r1, v.c1) : Array.isArray(v) ? v[0][0] : v; }
+    catch (e) { if (isErr(e)) return e; throw e; }
+  }
+  function refv(cx, host, n) {
+    const ws = sheetOf(cx, host, n.sheet); if (!ws) throw E.ref;
+    const { p1, p2 } = n;
+    if (!p2) return cellVal(cx, ws, p1.r, p1.c);
+    let r1 = p1.r, r2 = p2.r, c1 = p1.c, c2 = p2.c;
+    if (r1 == null) { r1 = 1; r2 = Math.max(1, lastRow(cx, ws)); }
+    if (c1 == null) { c1 = 1; c2 = Math.max(1, ws.columnCount); }
+    return { R: 1, ws, r1: Math.min(r1, r2), r2: Math.max(r1, r2), c1: Math.min(c1, c2), c2: Math.max(c1, c2) };
+  }
+  const rEnd = (cx, x) => Math.min(x.r2, Math.max(x.r1, lastRow(cx, x.ws)));
+  const rk = x => x && x.R ? x.ws.id + ':' + x.r1 + ':' + x.c1 + ':' + x.r2 + ':' + x.c2 : null;
+  function arr(cx, x) {
+    if (x && x.R && !x.small && x.r2 - x.r1 > 200) { const k = rk(x); let a = cx.ac.get(k); if (!a) { a = arr(cx, { ...x, small: 1, r2: x.r2 }); cx.ac.set(k, a); } return a; }
+    if (x && x.R) { const out = [], r2 = rEnd(cx, x); for (let r = x.r1; r <= r2; r++) { const row = []; for (let c = x.c1; c <= x.c2; c++) row.push(cellVal(cx, x.ws, r, c)); out.push(row); } return out.length ? out : [[null]]; }
+    return Array.isArray(x) ? x : [[x]];
+  }
+  function* vals(cx, x) { if (x && x.R) { const r2 = rEnd(cx, x); for (let r = x.r1; r <= r2; r++) for (let c = x.c1; c <= x.c2; c++) yield cellVal(cx, x.ws, r, c); } else if (Array.isArray(x)) { for (const row of x) for (const v of row) yield v; } else yield x; }
+  const scal = (cx, x) => x && x.R ? cellVal(cx, x.ws, x.r1, x.c1) : Array.isArray(x) ? x[0][0] : x;
+  const num = v => { if (isErr(v)) throw v; if (v == null || v === '') return 0; if (typeof v === 'number') return v; if (typeof v === 'boolean') return +v; const n = Number(String(v).replace(/,/g, '').trim()); if (isNaN(n)) throw E.val; return n; };
+  const str = v => { if (isErr(v)) throw v; if (v == null) return ''; if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'; if (typeof v === 'number') return gen(v); return String(v); };
+  const bool = v => { if (isErr(v)) throw v; if (typeof v === 'string') { const u = v.toUpperCase(); if (u === 'TRUE') return true; if (u === 'FALSE' || u === '') return false; throw E.val; } return !!v; };
+  const pick = (A, i, j) => { const row = A.length === 1 ? A[0] : A[i]; if (!row) return null; return row.length === 1 ? row[0] : row[j]; };
+  function ev(cx, ws, n) {
+    switch (n.k) {
+      case 'v': return n.v;
+      case 'ref': return refv(cx, ws, n);
+      case 'neg': return map1(cx, ev(cx, ws, n.a), v => -num(v));
+      case 'pct': return map1(cx, ev(cx, ws, n.a), v => num(v) / 100);
+      case 'bin': return bin(cx, n.o, ev(cx, ws, n.a), ev(cx, ws, n.b));
+      case 'fn': { const f = F[n.n]; if (!f) throw new Unsup(n.n); return f(cx, ws, n.args); }
+      case 'name': throw new Unsup(n.n);
+    }
+  }
+  const isA = x => (x && x.R) || Array.isArray(x);
+  function map1(cx, x, f) { if (!isA(x)) return f(x); return arr(cx, x).map(row => row.map(v => { try { return f(v); } catch (e) { if (isErr(e)) return e; throw e; } })); }
+  function bin(cx, o, a, b) {
+    if (isA(a) || isA(b)) {
+      const A = arr(cx, a), B = arr(cx, b), h = Math.max(A.length, B.length), w = Math.max(A[0].length, B[0].length);
+      return Array.from({ length: h }, (_, i) => Array.from({ length: w }, (_, j) => { try { return op(o, pick(A, i, j), pick(B, i, j)); } catch (e) { if (isErr(e)) return e; throw e; } }));
+    }
+    return op(o, a, b);
+  }
+  function op(o, a, b) {
+    switch (o) {
+      case '+': return num(a) + num(b);
+      case '-': return num(a) - num(b);
+      case '*': return num(a) * num(b);
+      case '/': { const d = num(b); if (d === 0) throw E.div; return num(a) / d; }
+      case '^': return Math.pow(num(a), num(b));
+      case '&': return str(a) + str(b);
+      default: return cmp(o, a, b);
+    }
+  }
+  function order(a, b) {
+    if (isErr(a)) throw a; if (isErr(b)) throw b;
+    let x = a == null ? (typeof b === 'string' ? '' : typeof b === 'boolean' ? false : 0) : a, y = b == null ? (typeof x === 'string' ? '' : typeof x === 'boolean' ? false : 0) : b;
+    if (typeof x === 'string' && typeof y === 'string') { x = x.toLowerCase(); y = y.toLowerCase(); }
+    if (typeof x === typeof y) return x < y ? -1 : x > y ? 1 : 0;
+    const rank = v => typeof v === 'number' ? 0 : typeof v === 'string' ? 1 : 2; return rank(x) - rank(y);
+  }
+  const cmp = (o, a, b) => { const r = order(a, b); return o === '=' ? r === 0 : o === '<>' ? r !== 0 : o === '<' ? r < 0 : o === '>' ? r > 0 : o === '<=' ? r <= 0 : r >= 0; };
+  const wild = t => new RegExp('^' + t.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/~\*/g, '\u0001').replace(/~\?/g, '\u0002').replace(/\*/g, '.*').replace(/\?/g, '.').replace(/\u0001/g, '\\*').replace(/\u0002/g, '\\?') + '$', 'is');
+  function crit(c) {
+    if (isErr(c)) throw c;
+    if (typeof c === 'number') return v => v === c || (typeof v === 'string' && v.trim() !== '' && Number(v) === c);
+    if (typeof c === 'boolean') return v => v === c;
+    c = c == null ? '' : String(c); const m = /^(<=|>=|<>|<|>|=)?([\s\S]*)$/.exec(c), o = m[1] || '=', t = m[2];
+    const n = t.trim() !== '' && !isNaN(Number(t)) ? Number(t) : null;
+    if (n != null) return v => typeof v === 'number' ? cmp(o, v, n) : o === '<>' ? true : o === '=' && typeof v === 'string' && v.trim() !== '' && Number(v) === n;
+    if (o === '=' || o === '<>') {
+      const blank = v => v == null || v === '';
+      if (t === '') return o === '=' ? blank : v => !blank(v);
+      const rx = /[*?]/.test(t) ? wild(t) : null, low = t.toLowerCase(), eq = v => { if (blank(v)) return false; const s = str(v).toLowerCase(); return rx ? rx.test(s) : s === low; };
+      return o === '=' ? eq : v => !eq(v);
+    }
+    return v => typeof v === 'string' && cmp(o, v, t);
+  }
+  // rows of the criteria ranges that pass every test → callback(i, j)
+  function ifs(cx, ws, pairs, cb) {
+    const rs = pairs.map(([rn, cn]) => { const R = ev(cx, ws, rn); if (!R || !R.R) throw new Unsup('julat dalam *IFS'); return [R, crit(scal(cx, ev(cx, ws, cn)))]; });
+    const B = rs[0][0], h = rEnd(cx, B) - B.r1 + 1, w = B.c2 - B.c1 + 1;
+    for (let i = 0; i < h; i++) for (let j = 0; j < w; j++) if (rs.every(([R, p]) => p(cellVal(cx, R.ws, R.r1 + i, R.c1 + j)))) cb(i, j);
+  }
+  const at = (cx, R, i, j) => R && R.R ? cellVal(cx, R.ws, R.r1 + i, R.c1 + j) : Array.isArray(R) ? pick(R, i, j) : R;
+  const nums = (cx, ws, args, keepText) => { const out = []; args.forEach(a => { const x = ev(cx, ws, a); if (isA(x)) { for (const v of vals(cx, x)) { if (isErr(v)) throw v; if (typeof v === 'number') out.push(v); else if (keepText && v != null && v !== '') out.push(typeof v === 'boolean' ? +v : 0); } } else if (x != null || a.k !== 'v') out.push(num(x)); }); return out; };
+  const round = (x, d, mode) => { const f = Math.pow(10, d), y = Math.abs(x) * f, z = +y.toPrecision(15); const r = mode === 'up' ? Math.ceil(z) : mode === 'down' ? Math.floor(z) : Math.round(z); return Math.sign(x) * r / f; };
+  const A0 = (cx, ws, args, i, d) => args[i] && !(args[i].k === 'v' && args[i].v == null) ? scal(cx, ev(cx, ws, args[i])) : d;
+  const lookupEq = (a, b) => { if (isErr(b)) return false; if (typeof a === 'string' && typeof b === 'string') return a.toLowerCase() === b.toLowerCase(); if (typeof a === 'number' && typeof b === 'string' && b.trim() !== '') return a === Number(b); if (typeof b === 'number' && typeof a === 'string' && a.trim() !== '') return b === Number(a); return a === b; };
+  const nk = x => x == null || x === '' ? null : typeof x === 'number' ? 'n' + x : typeof x === 'string' ? 's' + x.toLowerCase() : typeof x === 'boolean' ? 'b' + x : null;
+  function findIn(cx, list, v, mode, key) {      // mode 0 exact (wildcards for text), 1 largest ≤ v, -1 smallest ≥ v; key → cached hash index
+    if (mode === 0 && key && !(typeof v === 'string' && /[*?]/.test(v))) {
+      let m = cx.ix.get(key); if (!m) { m = new Map(); list.forEach((x, i) => { const k = nk(x); if (k != null && !m.has(k)) m.set(k, i); }); cx.ix.set(key, m); }
+      const k = nk(v); return k != null && m.has(k) ? m.get(k) : -1;
+    }
+    if (mode === 0) { const rx = typeof v === 'string' && /[*?]/.test(v) ? wild(v) : null; return list.findIndex(x => rx ? x != null && rx.test(str(x)) : lookupEq(v, x)); }
+    let best = -1; for (let i = 0; i < list.length; i++) { const x = list[i]; if (x == null || typeof x !== typeof v) continue; const r = order(x, v); if (mode === 1 ? r <= 0 : r >= 0) best = i; else if (mode === 1) break; } return best;
+  }
+  const vec = (cx, R) => { const k = rk(R), hit = k && cx.ac.get('v' + k); if (hit) return hit; const A = arr(cx, R), v = A.length === 1 ? A[0] : A.map(r => r[0]); if (k) cx.ac.set('v' + k, v); return v; };
+  const colv = (cx, R, T, j) => { const k = rk(R) && 'c' + j + rk(R), hit = k && cx.ac.get(k); if (hit) return hit; const v = T.map(r => r[j]); if (k) cx.ac.set(k, v); return v; };
+  const dateOf = v => sdate(num(v));
+  const F = {
+    SUM: (cx, ws, a) => nums(cx, ws, a).reduce((s, v) => s + v, 0),
+    PRODUCT: (cx, ws, a) => nums(cx, ws, a).reduce((s, v) => s * v, 1),
+    AVERAGE: (cx, ws, a) => { const n = nums(cx, ws, a); if (!n.length) throw E.div; return n.reduce((s, v) => s + v, 0) / n.length; },
+    MIN: (cx, ws, a) => { const n = nums(cx, ws, a); return n.length ? Math.min(...n) : 0; },
+    MAX: (cx, ws, a) => { const n = nums(cx, ws, a); return n.length ? Math.max(...n) : 0; },
+    COUNT: (cx, ws, a) => { let n = 0; a.forEach(x => { for (const v of vals(cx, ev(cx, ws, x))) if (typeof v === 'number') n++; }); return n; },
+    COUNTA: (cx, ws, a) => { let n = 0; a.forEach(x => { for (const v of vals(cx, ev(cx, ws, x))) if (v != null && v !== '') n++; }); return n; },
+    COUNTBLANK: (cx, ws, a) => { let n = 0; for (const v of vals(cx, ev(cx, ws, a[0]))) if (v == null || v === '') n++; return n; },
+    SUMPRODUCT: (cx, ws, a) => { const As = a.map(x => arr(cx, ev(cx, ws, x))), h = As[0].length, w = As[0][0].length; let s = 0; for (let i = 0; i < h; i++) for (let j = 0; j < w; j++) { let p = 1; for (const A of As) { const v = pick(A, i, j); if (isErr(v)) throw v; p *= typeof v === 'number' ? v : typeof v === 'boolean' ? +v : 0; } s += p; } return s; },
+    SUMIF: (cx, ws, a) => { const S = a[2] ? ev(cx, ws, a[2]) : ev(cx, ws, a[0]); let s = 0; ifs(cx, ws, [[a[0], a[1]]], (i, j) => { const v = at(cx, S, i, j); if (typeof v === 'number') s += v; }); return s; },
+    SUMIFS: (cx, ws, a) => { const S = ev(cx, ws, a[0]), p = []; for (let i = 1; i < a.length; i += 2) p.push([a[i], a[i + 1]]); let s = 0; ifs(cx, ws, p, (i, j) => { const v = at(cx, S, i, j); if (typeof v === 'number') s += v; }); return s; },
+    COUNTIF: (cx, ws, a) => { let n = 0; ifs(cx, ws, [[a[0], a[1]]], () => n++); return n; },
+    COUNTIFS: (cx, ws, a) => { const p = []; for (let i = 0; i < a.length; i += 2) p.push([a[i], a[i + 1]]); let n = 0; ifs(cx, ws, p, () => n++); return n; },
+    AVERAGEIF: (cx, ws, a) => { const S = a[2] ? ev(cx, ws, a[2]) : ev(cx, ws, a[0]); let s = 0, n = 0; ifs(cx, ws, [[a[0], a[1]]], (i, j) => { const v = at(cx, S, i, j); if (typeof v === 'number') { s += v; n++; } }); if (!n) throw E.div; return s / n; },
+    AVERAGEIFS: (cx, ws, a) => { const S = ev(cx, ws, a[0]), p = []; for (let i = 1; i < a.length; i += 2) p.push([a[i], a[i + 1]]); let s = 0, n = 0; ifs(cx, ws, p, (i, j) => { const v = at(cx, S, i, j); if (typeof v === 'number') { s += v; n++; } }); if (!n) throw E.div; return s / n; },
+    MAXIFS: (cx, ws, a) => { const S = ev(cx, ws, a[0]), p = []; for (let i = 1; i < a.length; i += 2) p.push([a[i], a[i + 1]]); let m = null; ifs(cx, ws, p, (i, j) => { const v = at(cx, S, i, j); if (typeof v === 'number' && (m == null || v > m)) m = v; }); return m || 0; },
+    MINIFS: (cx, ws, a) => { const S = ev(cx, ws, a[0]), p = []; for (let i = 1; i < a.length; i += 2) p.push([a[i], a[i + 1]]); let m = null; ifs(cx, ws, p, (i, j) => { const v = at(cx, S, i, j); if (typeof v === 'number' && (m == null || v < m)) m = v; }); return m || 0; },
+    SUBTOTAL: (cx, ws, a) => { const k = num(scal(cx, ev(cx, ws, a[0]))) % 100, r = a.slice(1); const g = { 1: 'AVERAGE', 2: 'COUNT', 3: 'COUNTA', 4: 'MAX', 5: 'MIN', 6: 'PRODUCT', 9: 'SUM' }[k]; if (!g) throw new Unsup('SUBTOTAL ' + k); return F[g](cx, ws, r); },
+    ROUND: (cx, ws, a) => round(num(A0(cx, ws, a, 0)), num(A0(cx, ws, a, 1, 0))),
+    ROUNDUP: (cx, ws, a) => round(num(A0(cx, ws, a, 0)), num(A0(cx, ws, a, 1, 0)), 'up'),
+    ROUNDDOWN: (cx, ws, a) => round(num(A0(cx, ws, a, 0)), num(A0(cx, ws, a, 1, 0)), 'down'),
+    TRUNC: (cx, ws, a) => round(num(A0(cx, ws, a, 0)), num(A0(cx, ws, a, 1, 0)), 'down'),
+    INT: (cx, ws, a) => Math.floor(num(A0(cx, ws, a, 0))),
+    ABS: (cx, ws, a) => Math.abs(num(A0(cx, ws, a, 0))),
+    SQRT: (cx, ws, a) => { const x = num(A0(cx, ws, a, 0)); if (x < 0) throw E.num; return Math.sqrt(x); },
+    POWER: (cx, ws, a) => Math.pow(num(A0(cx, ws, a, 0)), num(A0(cx, ws, a, 1))),
+    MOD: (cx, ws, a) => { const x = num(A0(cx, ws, a, 0)), d = num(A0(cx, ws, a, 1)); if (!d) throw E.div; return x - d * Math.floor(x / d); },
+    CEILING: (cx, ws, a) => { const x = num(A0(cx, ws, a, 0)), s = num(A0(cx, ws, a, 1, 1)); return s ? Math.ceil(+(x / s).toPrecision(15)) * s : 0; },
+    FLOOR: (cx, ws, a) => { const x = num(A0(cx, ws, a, 0)), s = num(A0(cx, ws, a, 1, 1)); return s ? Math.floor(+(x / s).toPrecision(15)) * s : 0; },
+    IF: (cx, ws, a) => bool(scal(cx, ev(cx, ws, a[0]))) ? (a[1] ? ev(cx, ws, a[1]) : true) : (a[2] ? ev(cx, ws, a[2]) : false),
+    IFERROR: (cx, ws, a) => { try { const v = ev(cx, ws, a[0]); if (isErr(isA(v) ? scal(cx, v) : v)) return ev(cx, ws, a[1]); return v; } catch (e) { if (isErr(e)) return ev(cx, ws, a[1]); throw e; } },
+    IFNA: (cx, ws, a) => { try { const v = ev(cx, ws, a[0]); if ((isA(v) ? scal(cx, v) : v) === E.na) return ev(cx, ws, a[1]); return v; } catch (e) { if (e === E.na) return ev(cx, ws, a[1]); throw e; } },
+    IFS: (cx, ws, a) => { for (let i = 0; i < a.length; i += 2) if (bool(scal(cx, ev(cx, ws, a[i])))) return ev(cx, ws, a[i + 1]); throw E.na; },
+    AND: (cx, ws, a) => { let r = true; a.forEach(x => { for (const v of vals(cx, ev(cx, ws, x))) if (v != null && v !== '' && !bool(v)) r = false; }); return r; },
+    OR: (cx, ws, a) => { let r = false; a.forEach(x => { for (const v of vals(cx, ev(cx, ws, x))) if (v != null && v !== '' && bool(v)) r = true; }); return r; },
+    NOT: (cx, ws, a) => !bool(A0(cx, ws, a, 0)),
+    TRUE: () => true, FALSE: () => false,
+    CHOOSE: (cx, ws, a) => { const k = Math.floor(num(A0(cx, ws, a, 0))); if (k < 1 || k >= a.length) throw E.val; return ev(cx, ws, a[k]); },
+    VLOOKUP: (cx, ws, a) => { const v = A0(cx, ws, a, 0), R = ev(cx, ws, a[1]), T = arr(cx, R), k = Math.floor(num(A0(cx, ws, a, 2))), ap = a[3] ? bool(A0(cx, ws, a, 3, true)) : true; if (k < 1 || k > T[0].length) throw E.ref; const i = findIn(cx, colv(cx, R, T, 0), v, ap ? 1 : 0, rk(R) && 'V' + rk(R)); if (i < 0) throw E.na; return T[i][k - 1]; },
+    HLOOKUP: (cx, ws, a) => { const v = A0(cx, ws, a, 0), T = arr(cx, ev(cx, ws, a[1])), k = Math.floor(num(A0(cx, ws, a, 2))), ap = a[3] ? bool(A0(cx, ws, a, 3, true)) : true; if (k < 1 || k > T.length) throw E.ref; const i = findIn(cx, T[0], v, ap ? 1 : 0); if (i < 0) throw E.na; return T[k - 1][i]; },
+    MATCH: (cx, ws, a) => { const v = A0(cx, ws, a, 0), L = vec(cx, ev(cx, ws, a[1])), t = num(A0(cx, ws, a, 2, 1)); const i = findIn(cx, L, v, t === 0 ? 0 : t > 0 ? 1 : -1, rk(ev(cx, ws, a[1])) && 'M' + rk(ev(cx, ws, a[1]))); if (i < 0) throw E.na; return i + 1; },
+    INDEX: (cx, ws, a) => { const T = arr(cx, ev(cx, ws, a[0])); let r = Math.floor(num(A0(cx, ws, a, 1, 0))), c = Math.floor(num(A0(cx, ws, a, 2, 0))); if (T.length === 1 && a.length < 3) { c = r; r = 1; } r = r || 1; c = c || 1; if (!T[r - 1] || T[r - 1][c - 1] === undefined) throw E.ref; return T[r - 1][c - 1]; },
+    XLOOKUP: (cx, ws, a) => { const v = A0(cx, ws, a, 0), LR = ev(cx, ws, a[1]), L = vec(cx, LR), Rv = vec(cx, ev(cx, ws, a[2])); const i = findIn(cx, L, v, 0, rk(LR) && 'M' + rk(LR)); if (i < 0) { if (a[3] && !(a[3].k === 'v' && a[3].v == null)) return ev(cx, ws, a[3]); throw E.na; } return Rv[i]; },
+    ROWS: (cx, ws, a) => { const x = ev(cx, ws, a[0]); return x && x.R ? x.r2 - x.r1 + 1 : arr(cx, x).length; },
+    COLUMNS: (cx, ws, a) => { const x = ev(cx, ws, a[0]); return x && x.R ? x.c2 - x.c1 + 1 : arr(cx, x)[0].length; },
+    ROW: (cx, ws, a) => { if (!a.length) return cx.cur.r; const n = a[0]; if (n.k !== 'ref') throw E.val; return n.p1.r; },
+    COLUMN: (cx, ws, a) => { if (!a.length) return cx.cur.c; const n = a[0]; if (n.k !== 'ref') throw E.val; return n.p1.c; },
+    CONCATENATE: (cx, ws, a) => a.map(x => str(scal(cx, ev(cx, ws, x)))).join(''),
+    CONCAT: (cx, ws, a) => a.map(x => [...vals(cx, ev(cx, ws, x))].map(str).join('')).join(''),
+    TEXTJOIN: (cx, ws, a) => { const d = str(A0(cx, ws, a, 0, '')), skip = bool(A0(cx, ws, a, 1, true)), out = []; a.slice(2).forEach(x => { for (const v of vals(cx, ev(cx, ws, x))) { const s = str(v); if (!(skip && s === '')) out.push(s); } }); return out.join(d); },
+    LEFT: (cx, ws, a) => str(A0(cx, ws, a, 0)).slice(0, num(A0(cx, ws, a, 1, 1))),
+    RIGHT: (cx, ws, a) => { const s = str(A0(cx, ws, a, 0)), n = num(A0(cx, ws, a, 1, 1)); return n ? s.slice(-n) : ''; },
+    MID: (cx, ws, a) => { const s = str(A0(cx, ws, a, 0)), p = num(A0(cx, ws, a, 1)); return s.substr(p - 1, num(A0(cx, ws, a, 2))); },
+    LEN: (cx, ws, a) => str(A0(cx, ws, a, 0)).length,
+    UPPER: (cx, ws, a) => str(A0(cx, ws, a, 0)).toUpperCase(),
+    LOWER: (cx, ws, a) => str(A0(cx, ws, a, 0)).toLowerCase(),
+    PROPER: (cx, ws, a) => str(A0(cx, ws, a, 0)).toLowerCase().replace(/(^|[^a-z])([a-z])/g, (m, p, c) => p + c.toUpperCase()),
+    TRIM: (cx, ws, a) => str(A0(cx, ws, a, 0)).replace(/ +/g, ' ').trim(),
+    SUBSTITUTE: (cx, ws, a) => { const s = str(A0(cx, ws, a, 0)), o = str(A0(cx, ws, a, 1)), n = str(A0(cx, ws, a, 2)); if (!o) return s; if (a[3]) { const k = num(A0(cx, ws, a, 3)); let i = -1; for (let j = 0; j < k; j++) { i = s.indexOf(o, i + 1); if (i < 0) return s; } return s.slice(0, i) + n + s.slice(i + o.length); } return s.split(o).join(n); },
+    FIND: (cx, ws, a) => { const i = str(A0(cx, ws, a, 1)).indexOf(str(A0(cx, ws, a, 0)), num(A0(cx, ws, a, 2, 1)) - 1); if (i < 0) throw E.val; return i + 1; },
+    SEARCH: (cx, ws, a) => { const i = str(A0(cx, ws, a, 1)).toLowerCase().indexOf(str(A0(cx, ws, a, 0)).toLowerCase(), num(A0(cx, ws, a, 2, 1)) - 1); if (i < 0) throw E.val; return i + 1; },
+    VALUE: (cx, ws, a) => num(A0(cx, ws, a, 0)),
+    TEXT: (cx, ws, a) => { const v = A0(cx, ws, a, 0); return typeof v === 'string' && isNaN(Number(v)) ? v : fmt(num(v), str(A0(cx, ws, a, 1))); },
+    N: (cx, ws, a) => { const v = A0(cx, ws, a, 0); return typeof v === 'number' ? v : typeof v === 'boolean' ? +v : 0; },
+    ISNUMBER: (cx, ws, a) => typeof safe(cx, ws, a[0]) === 'number',
+    ISTEXT: (cx, ws, a) => typeof safe(cx, ws, a[0]) === 'string',
+    ISBLANK: (cx, ws, a) => safe(cx, ws, a[0]) == null,
+    ISERROR: (cx, ws, a) => isErr(safe(cx, ws, a[0])),
+    ISNA: (cx, ws, a) => safe(cx, ws, a[0]) === E.na,
+    TODAY: () => Math.floor(dser(new Date(Date.now() - new Date().getTimezoneOffset() * 6e4))),
+    NOW: () => dser(new Date(Date.now() - new Date().getTimezoneOffset() * 6e4)),
+    DATE: (cx, ws, a) => dser(new Date(Date.UTC(num(A0(cx, ws, a, 0)), num(A0(cx, ws, a, 1)) - 1, num(A0(cx, ws, a, 2))))),
+    YEAR: (cx, ws, a) => dateOf(A0(cx, ws, a, 0)).getUTCFullYear(),
+    MONTH: (cx, ws, a) => dateOf(A0(cx, ws, a, 0)).getUTCMonth() + 1,
+    DAY: (cx, ws, a) => dateOf(A0(cx, ws, a, 0)).getUTCDate(),
+    WEEKDAY: (cx, ws, a) => { const d = dateOf(A0(cx, ws, a, 0)).getUTCDay(), t = num(A0(cx, ws, a, 1, 1)); return t === 2 ? (d + 6) % 7 + 1 : t === 3 ? (d + 6) % 7 : d + 1; },
+    EOMONTH: (cx, ws, a) => { const d = dateOf(A0(cx, ws, a, 0)); return dser(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + num(A0(cx, ws, a, 1)) + 1, 0))); },
+    EDATE: (cx, ws, a) => { const d = dateOf(A0(cx, ws, a, 0)); return dser(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + num(A0(cx, ws, a, 1)), d.getUTCDate()))); },
+  };
+  F.AVG = F.AVERAGE;
+  function safe(cx, ws, n) { try { return scal(cx, ev(cx, ws, n)); } catch (e) { if (isErr(e)) return e; throw e; } }
+
+  /* number formats (display + TEXT) */
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], MONL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'], DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const p2 = n => String(n).padStart(2, '0');
+  function gen(v) { if (Number.isInteger(v)) return String(v); const s = String(+v.toPrecision(11)); return s; }
+  function splitFmt(f) { const out = ['']; let q = false; for (let i = 0; i < f.length; i++) { const ch = f[i]; if (ch === '"') q = !q; if (ch === '\\' && !q) { out[out.length - 1] += ch + (f[i + 1] || ''); i++; continue; } if (ch === ';' && !q) { out.push(''); continue; } out[out.length - 1] += ch; } return out; }
+  const bare = s => s.replace(/"[^"]*"|\[[^\]]*\]|\\./g, '');
+  const isDateFmt = f => { const s = bare(f); return /[dymhs]/i.test(s) && !/[#0?@]/.test(s.replace(/\.0+/, '')) && !/general/i.test(s); };
+  function fmtDate(d, f) {
+    const s = f.replace(/\[[^\]]*\]/g, '').replace(/"([^"]*)"/g, '$1').replace(/\\(.)/g, '$1');
+    const Y = d.getUTCFullYear(), Mo = d.getUTCMonth(), D = d.getUTCDate(), h = d.getUTCHours(), mi = d.getUTCMinutes(), se = d.getUTCSeconds(), ampm = /AM\/PM/i.test(s);
+    return s.replace(/yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d|hh|h|ss|s|AM\/PM/gi, (t, off) => {
+      const T = t.toLowerCase();
+      if (T === 'am/pm') return h < 12 ? 'AM' : 'PM';
+      if (T === 'yyyy') return Y; if (T === 'yy') return p2(Y % 100);
+      if (T === 'mmmm') return MONL[Mo]; if (T === 'mmm') return MON[Mo];
+      if (T === 'mm' || T === 'm') { const prev = s.slice(0, off).replace(/[^a-z]/gi, '').slice(-1).toLowerCase(), nx = (s.slice(off + t.length).replace(/[^a-z]/gi, '')[0] || '').toLowerCase(); const v = prev === 'h' || nx === 's' ? mi : Mo + 1; return T === 'mm' ? p2(v) : v; }
+      if (T === 'dddd') return DAYS[d.getUTCDay()]; if (T === 'ddd') return DAYS[d.getUTCDay()].slice(0, 3);
+      if (T === 'dd') return p2(D); if (T === 'd') return D;
+      const hh = ampm ? (h % 12 || 12) : h;
+      if (T === 'hh') return p2(hh); if (T === 'h') return hh;
+      if (T === 'ss') return p2(se); return se;
+    });
+  }
+  function fmtSec(v, sec) {
+    const s = sec.replace(/\[[^\]]*\]/g, '').replace(/_./g, '').replace(/\*./g, ''), mask = s.replace(/"[^"]*"|\\./g, x => '\u0001'.repeat(x.length));
+    const lit = x => x.replace(/"([^"]*)"/g, '$1').replace(/\\(.)/g, '$1');
+    if (/%/.test(mask)) v *= 100;
+    const m = /[#0?,.]*[0#?][#0?,.]*/.exec(mask);
+    if (!m) return lit(s).replace(/@/g, gen(v)).trim();
+    const [ip, fp = ''] = m[0].split('.'), maxD = fp.replace(/[^0#?]/g, '').length, minD = fp.replace(/[^0]/g, '').length, minI = ip.replace(/[^0]/g, '').length;
+    let txt = round(v, maxD).toLocaleString('en-US', { minimumFractionDigits: minD, maximumFractionDigits: maxD, useGrouping: /,/.test(ip) });
+    if (minI === 0 && /^0(\.|$)/.test(txt)) txt = txt.slice(1);
+    else if (minI > 1 && !/,/.test(ip)) { const [a, b] = txt.split('.'); txt = a.padStart(minI, '0') + (b != null ? '.' + b : ''); }
+    return (lit(s.slice(0, m.index)) + txt + lit(s.slice(m.index + m[0].length))).replace(/^\s+|\s+$/g, '');
+  }
+  function fmt(v, f) {
+    if (v == null) return '';
+    if (v instanceof Err) return v.e;
+    if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+    if (v instanceof Date) { if (!f || /^general$/i.test(f) || !isDateFmt(f)) return fmtDate(v, 'dd/mm/yyyy'); v = dser(v); }
+    if (typeof v === 'string') { const s = f && splitFmt(f)[3]; return s && /@/.test(s) ? fmtSec(0, s).replace(/0/, v) : v; }
+    if (typeof v !== 'number' || !isFinite(v)) return String(v);
+    if (!f || /^general$/i.test(f) || f === '@') return gen(v);
+    const secs = splitFmt(f); let sec = secs[0], x = v;
+    if (v < 0 && secs.length > 1) { sec = secs[1]; x = -v; } else if (v === 0 && secs.length > 2) sec = secs[2];
+    if (isDateFmt(sec)) return fmtDate(sdate(x), sec);
+    const out = fmtSec(Math.abs(x), sec);
+    return x < 0 && (v >= 0 || secs.length === 1) && /[1-9]/.test(out) ? '-' + out : out;
+  }
+
+  /* moving references */
+  function mapRefs(f, fn) {
+    let T; try { T = lex(f); } catch (e) { return f; }
+    let out = '', last = 0;
+    for (const t of T) {
+      if (t.t !== 'ref') continue; const x = fn({ sheet: t.sheet, ...pref(t.a) }); if (x === undefined) continue;
+      const sh = x && x.sheet !== undefined ? x.sheet : t.sheet;
+      out += f.slice(last, t.p) + (x === null ? '#REF!' : (sh ? qs(sh) + '!' : '') + ser(x.p1) + (x.p2 ? ':' + ser(x.p2) : '')); last = t.e;
+    }
+    return out + f.slice(last);
+  }
+  // rows ('r') / columns ('c') of sheet `name` inserted (n>0) before `at`, or deleted (n<0) starting at `at`
+  function shiftF(f, host, name, axis, at, n) {
+    const lo = at, hi = at - n - 1, low = name.toLowerCase();
+    return mapRefs(f, t => {
+      if ((t.sheet || host).toLowerCase() !== low) return;
+      const p1 = { ...t.p1 }, p2 = t.p2 && { ...t.p2 }, k = axis;
+      if (p1[k] == null) return;
+      if (n > 0) { let ch = false; [p1, p2].forEach(p => { if (p && p[k] != null && p[k] >= at) { p[k] += n; ch = true; } }); return ch ? { p1, p2 } : undefined; }
+      const d = -n;
+      if (!p2) { if (p1[k] >= lo && p1[k] <= hi) return null; if (p1[k] > hi) { p1[k] -= d; return { p1, p2 }; } return; }
+      const a = Math.min(p1[k], p2[k]), b = Math.max(p1[k], p2[k]);
+      const na = a > hi ? a - d : a >= lo ? lo : a, nb = b > hi ? b - d : b >= lo ? lo - 1 : b;
+      if (nb < na) return null; if (na === a && nb === b) return;
+      p1[k] = na; p2[k] = nb; return { p1, p2 };
+    });
+  }
+  // formula copied by (dr, dc): relative parts move, $ parts stay
+  function translate(f, dr, dc) {
+    if (!dr && !dc) return f;
+    return mapRefs(f, t => {
+      const mv = p => { if (!p) return p; const q = { ...p }; if (q.r != null && !q.ar) q.r += dr; if (q.c != null && !q.ac) q.c += dc; return q; };
+      const p1 = mv(t.p1), p2 = mv(t.p2); if ((p1.r != null && p1.r < 1) || (p1.c != null && p1.c < 1) || (p2 && ((p2.r != null && p2.r < 1) || (p2.c != null && p2.c < 1)))) return null;
+      return { p1, p2 };
+    });
+  }
+  const renameSheet = (f, from, to) => mapRefs(f, t => t.sheet && t.sheet.toLowerCase() === from.toLowerCase() ? { ...t, sheet: to } : undefined);
+  const refsSheet = (f, host, name) => { let hit = false; mapRefs(f, t => { if ((t.sheet || host).toLowerCase() === name.toLowerCase()) hit = true; }); return hit; };
+
+  function eachFormula(ws, fn) { ws.eachRow({ includeEmpty: false }, row => row.eachCell({ includeEmpty: false }, cell => { if (cell.type === 1) return; const v = cell.value; if (v && typeof v === 'object' && (v.formula != null || v.sharedFormula != null)) fn(cell); })); }
+  // shared formulas → one plain formula per cell (so rows can move and every cell can be edited on its own)
+  function normalize(wb) {
+    wb.worksheets.forEach(ws => {
+      const todo = []; eachFormula(ws, cell => { const v = cell.value; if (v.sharedFormula != null || v.shareType) { let f; try { f = cell.formula; } catch (e) { f = null; } if (f) todo.push([cell, f, v.result]); } });
+      todo.forEach(([cell, f, result]) => { cell.value = result === undefined ? { formula: f } : { formula: f, result }; });
+    });
+  }
+  // compute every formula and store its result in the file (so viewers that do not recalculate also show the right numbers)
+  function calcAll(wb) {
+    const cx = new Ctx(wb); let n = 0;
+    wb.worksheets.forEach(ws => eachFormula(ws, cell => {
+      const v = fval(cx, ws, cell), k = ws.id + ':' + cell.row + ':' + cell.col; if (cx.bad.has(k)) return;
+      const res = isErr(v) ? { error: v.e } : Array.isArray(v) ? undefined : v;
+      cell.value = res === undefined || res === null ? { formula: cell.formula } : { formula: cell.formula, result: res }; n++;
+    }));
+    return { n, bad: cx.bad.size };
+  }
+  return { colN, colS, addr, parse, lex, Ctx, value: cellVal, lastRow, fmt, isErr, isDateFmt, mapRefs, shiftF, translate, renameSheet, refsSheet, normalize, calcAll, eachFormula, dser, sdate, FN: Object.keys(F) };
+})();
+
 (function () {
   if (typeof HTMLElement === 'undefined') return;            // headless test harness: keep plain downloads
-  const css = `.rvm{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:90;display:flex;align-items:stretch;justify-content:center;padding:18px}
-.rvb{background:#fff;border-radius:14px;width:100%;max-width:1500px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35)}
-.rvh{display:flex;gap:8px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}.rvh b{font-size:15px}.rvh .sp{flex:1}
-.rvt{display:flex;gap:4px;padding:6px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}.rvt button{border:1px solid var(--line);background:#f6f8fc;border-radius:8px;padding:3px 10px;cursor:pointer;font-size:13px}.rvt button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
-.rvg{flex:1;overflow:auto;background:#eef1f6;padding:10px}.rvg table{border-collapse:collapse;background:#fff;font:12px Calibri,Arial,sans-serif;table-layout:fixed}
-.rvg td{border:1px solid #e3e6ec;padding:1px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:18px;vertical-align:bottom}.rvg td.ed{outline:2px solid #f59e0b;outline-offset:-2px}
-.rvg td:focus{outline:2px solid var(--pri);outline-offset:-2px;white-space:normal;overflow:visible}.rvg th{position:sticky;left:0;background:#f1f3f7;color:#8a93a6;font-weight:400;font-size:11px;padding:0 4px;border:1px solid #e3e6ec}
-.rvg textarea{width:100%;height:100%;min-height:60vh;font:13px Consolas,monospace}.rvl td{padding:6px 10px}.rvpill{position:fixed;right:14px;bottom:14px;z-index:80;background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 12px;box-shadow:0 4px 14px rgba(0,0,0,.12);font-size:13px;cursor:pointer}
-.rvpill b{color:var(--pri)}.rvmore{margin:8px 0}`;
+  const css = `.rvm{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:90;display:flex;align-items:stretch;justify-content:center;padding:12px}
+.rvb{background:#fff;border-radius:12px;width:100%;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.rvh{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}.rvh b{font-size:15px}.rvh .sp{flex:1}
+.rvh .fn{min-width:280px;flex:0 1 420px;font-weight:600}
+.xtb{display:flex;gap:3px;align-items:center;padding:5px 10px;border-bottom:1px solid var(--line);flex-wrap:wrap;background:#f8fafd}
+.xtb button,.xtb select{border:1px solid transparent;background:none;border-radius:6px;padding:3px 7px;cursor:pointer;font:13px inherit;color:#1b2236;min-height:28px}
+.xtb button:hover{background:#e8eefb;border-color:#cfdaf0}.xtb .gp{display:flex;gap:2px;align-items:center;padding:0 6px;border-right:1px solid #dde3ee}.xtb .gp:last-child{border:0}
+.xtb .sw{width:16px;height:16px;border-radius:3px;border:1px solid #9aa5b8;padding:0;min-height:0}.xtb select{border-color:#d5dceb;background:#fff}
+.xfb{display:flex;gap:6px;align-items:center;padding:5px 10px;border-bottom:1px solid var(--line)}
+.xfb .nb{width:90px;font:13px Consolas,monospace;padding:4px 6px;border:1px solid #cfd6e4;border-radius:6px;text-align:center}
+.xfb .fx{flex:1;font:13px Consolas,monospace;padding:4px 8px;border:1px solid #cfd6e4;border-radius:6px}.xfb .fx:focus,.xfb .nb:focus{outline:2px solid var(--pri);border-color:transparent}
+.xfb i{font-style:italic;color:#8a93a6;font-weight:700}.xhint{font-size:12px;color:#57617a;padding:0 10px 4px 108px;min-height:4px}.xhint b{color:#1e40af}.xhint .bad{color:var(--bad)}
+.rvg{flex:1;overflow:auto;background:#fff;position:relative}.xw{position:relative;display:inline-block;min-width:100%}
+.xg{border-collapse:separate;border-spacing:0;font:12px Calibri,Arial,sans-serif;table-layout:fixed;user-select:none}
+.xg td{border-right:1px solid #e3e6ec;border-bottom:1px solid #e3e6ec;padding:1px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:18px;vertical-align:bottom;cursor:cell}
+.xg thead th{position:sticky;top:0;z-index:3;background:#f1f3f7;color:#5d667a;font-weight:400;font-size:11px;height:20px;border-right:1px solid #d6dbe5;border-bottom:1px solid #c9cfdb;cursor:s-resize}
+.xg tbody th{position:sticky;left:0;z-index:2;background:#f1f3f7;color:#5d667a;font-weight:400;font-size:11px;padding:0 4px;border-right:1px solid #c9cfdb;border-bottom:1px solid #d6dbe5;cursor:e-resize;min-width:34px}
+.xg thead th.cn{left:0;z-index:4;cursor:se-resize}.xg th.hs{background:#d3e1fb;color:#1e40af;font-weight:700}
+.xg td.s{background-image:linear-gradient(rgba(37,99,235,.14),rgba(37,99,235,.14))}.xg td.a{outline:2px solid #2563eb;outline-offset:-2px}
+.xg td.ed{box-shadow:inset 0 0 0 2px #f59e0b}.xg td.er{color:#dc2626!important}.xg td.fb{background-image:linear-gradient(135deg,#f59e0b 0,#f59e0b 5px,transparent 5px)}
+.xg td.pt{outline:2px dashed #16a34a;outline-offset:-2px}
+.xe{position:absolute;z-index:6;border:2px solid #2563eb;font:12px Calibri,Arial,sans-serif;padding:0 3px;box-sizing:border-box;background:#fff;outline:none;box-shadow:0 2px 8px rgba(0,0,0,.18)}
+.xs{display:flex;gap:4px;align-items:stretch;border-top:1px solid var(--line);background:#f6f8fc;min-height:30px;flex-wrap:wrap}
+.xs .tabs{display:flex;gap:2px;overflow:auto;flex:1;padding:0 6px}.xs .tabs button{border:0;border-bottom:3px solid transparent;background:none;padding:4px 12px;cursor:pointer;font:13px inherit;white-space:nowrap;color:#4b5568}
+.xs .tabs button.on{background:#fff;border-bottom-color:#16a34a;color:#14532d;font-weight:700}.xs .tabs button.off{text-decoration:line-through;opacity:.55}
+.xs .st{display:flex;gap:14px;align-items:center;padding:0 12px;font-size:12px;color:#4b5568;white-space:nowrap}.xs .st b{color:#1b2236}
+.xpan{position:absolute;right:12px;top:8px;z-index:8;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:12px 14px;width:min(430px,92%);max-height:80%;overflow:auto;font-size:13px}
+.xpan h4{margin:0 0 8px;font-size:14px}.xpan label{display:flex;gap:6px;align-items:center;margin:3px 0}.xpan .in{width:100%}.xpan table{width:100%;border-collapse:collapse}.xpan td{padding:3px 4px;border-bottom:1px solid #eef1f6;vertical-align:top}
+.xpan .go{cursor:pointer;color:var(--pri);font-family:Consolas,monospace}.xfind{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.xmenu{position:fixed;z-index:120;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.2);padding:4px;min-width:230px;font-size:13px}
+.xmenu button{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 10px;border-radius:6px;cursor:pointer;font:inherit}.xmenu button:hover{background:#eef3fe}.xmenu hr{border:0;border-top:1px solid #eef1f6;margin:3px 0}
+.rvg textarea{width:100%;height:100%;min-height:60vh;font:13px Consolas,monospace;border:0;padding:10px;box-sizing:border-box}.rvl td{padding:6px 10px}
+.rvpill{position:fixed;right:14px;bottom:14px;z-index:80;background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 12px;box-shadow:0 4px 14px rgba(0,0,0,.12);font-size:13px;cursor:pointer}.rvpill b{color:var(--pri)}
+.xsink{position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0}`;
   const st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
   const THEME = ['FFFFFF', '000000', 'E7E6E6', '44546A', '4472C4', 'ED7D31', 'A5A5A5', 'FFC000', '5B9BD5', '70AD47'];
   const tint = (hex, t) => { if (!t) return hex; const c = [0, 2, 4].map(i => parseInt(hex.substr(i, 2), 16)).map(v => Math.round(t < 0 ? v * (1 + t) : v + (255 - v) * t)); return c.map(v => v.toString(16).padStart(2, '0')).join(''); };
   const color = c => !c ? null : c.argb ? c.argb.slice(-6) : c.theme != null ? tint(THEME[c.theme] || '000000', c.tint || 0) : null;
-  const bd = b => !b || !b.style ? '' : b.style === 'double' ? '3px double #000' : b.style === 'medium' || b.style === 'thick' ? '2px solid #000' : '1px solid #000';
-  const shown = c => {
-    let v = c.value; if (v && typeof v === 'object') { if (v.richText) v = v.richText.map(x => x.text).join(''); else if ('result' in v || 'formula' in v || 'sharedFormula' in v) v = v.result; else if (v.text) v = v.text; else if (v.error) v = v.error; }
-    if (v == null) return ''; if (v instanceof Date) return `${pad(v.getUTCDate())}/${pad(v.getUTCMonth() + 1)}/${v.getUTCFullYear()}`;
-    if (typeof v === 'number') { const f = c.numFmt || ''; if (/%/.test(f)) return (v * 100).toFixed((f.split('.')[1] || '').replace(/[^0]/g, '').length) + '%'; if (/0\.00/.test(f) || /#,##0/.test(f)) { const s = Math.abs(v).toLocaleString('en-MY', { minimumFractionDigits: /0\.00/.test(f) ? 2 : 0, maximumFractionDigits: /0\.00/.test(f) ? 2 : 0 }); return v < 0 ? (/\(/.test(f) ? `(${s})` : '-' + s) : (Math.abs(v) < 0.005 && /"-"/.test(f) ? '-' : s); } return String(Math.round(v * 1e6) / 1e6); }
+  const bd = b => !b || !b.style ? '' : b.style === 'double' ? '3px double #000' : b.style === 'medium' || b.style === 'thick' ? '2px solid #000' : b.style === 'dotted' || b.style === 'hair' ? '1px dotted #000' : b.style === 'dashed' ? '1px dashed #000' : '1px solid #000';
+  const A = XF.addr, CHUNK = 300, KEY = (r, c) => r * 4096 + c;
+  const FILLS = [['', 'Tiada'], ['FFFF00', 'Kuning'], ['FFF2CC', 'Kuning cair'], ['C6EFCE', 'Hijau'], ['FFC7CE', 'Merah'], ['DDEBF7', 'Biru'], ['E4DFEC', 'Ungu'], ['FCE4D6', 'Oren'], ['D9D9D9', 'Kelabu']];
+  const FONTS = [['000000', 'Hitam'], ['C00000', 'Merah'], ['0070C0', 'Biru'], ['00B050', 'Hijau'], ['7030A0', 'Ungu']];
+  const NUMF = [['General', 'Umum'], ['#,##0.00', '1,234.56'], ['#,##0', '1,235'], ['0.00', '1234.56'], ['0', 'Nombor bulat'], ['0.00%', 'Peratus %'], ['dd/mm/yyyy', 'Tarikh dd/mm/yyyy'], ['@', 'Teks']];
+  const SIG = {
+    SUM: 'SUM(nombor1, [nombor2], …) — jumlahkan', AVERAGE: 'AVERAGE(nombor1, …) — purata', COUNT: 'COUNT(julat) — kira sel bernombor', COUNTA: 'COUNTA(julat) — kira sel berisi',
+    MIN: 'MIN(julat) — paling kecil', MAX: 'MAX(julat) — paling besar', ROUND: 'ROUND(nombor, titik_perpuluhan) — bundarkan', IF: 'IF(syarat, jika_betul, jika_salah)',
+    SUMIF: 'SUMIF(julat_syarat, syarat, [julat_jumlah]) — jumlah ikut syarat', SUMIFS: 'SUMIFS(julat_jumlah, julat_syarat1, syarat1, …)', COUNTIF: 'COUNTIF(julat, syarat) — kira ikut syarat', COUNTIFS: 'COUNTIFS(julat1, syarat1, …)',
+    VLOOKUP: 'VLOOKUP(cari, jadual, no_lajur, [FALSE=tepat])', XLOOKUP: 'XLOOKUP(cari, julat_cari, julat_hasil, [jika_tiada])', INDEX: 'INDEX(julat, baris, [lajur])', MATCH: 'MATCH(cari, julat, [0=tepat])',
+    IFERROR: 'IFERROR(nilai, jika_ralat)', SUMPRODUCT: 'SUMPRODUCT(julat1, julat2, …) — darab & jumlah', AVERAGEIF: 'AVERAGEIF(julat, syarat, [julat_purata])', SUBTOTAL: 'SUBTOTAL(9=jumlah, julat)',
+    TEXT: 'TEXT(nilai, "format") cth TEXT(A1,"dd/mm/yyyy")', CONCAT: 'CONCAT(teks1, teks2, …) — cantum teks', LEFT: 'LEFT(teks, bil)', RIGHT: 'RIGHT(teks, bil)', MID: 'MID(teks, mula, bil)',
+    ROUNDUP: 'ROUNDUP(nombor, titik)', ROUNDDOWN: 'ROUNDDOWN(nombor, titik)', ABS: 'ABS(nombor)', DATE: 'DATE(tahun, bulan, hari)', AND: 'AND(syarat1, syarat2, …)', OR: 'OR(syarat1, syarat2, …)',
+  };
+  const FNPICK = ['SUM', 'AVERAGE', 'COUNT', 'COUNTA', 'MIN', 'MAX', 'ROUND', 'IF', 'SUMIF', 'SUMIFS', 'COUNTIF', 'VLOOKUP', 'XLOOKUP', 'IFERROR', 'SUMPRODUCT', 'TEXT', 'CONCAT'];
+  let M = null;   // current modal state
+
+  /* ---------- small helpers ---------- */
+  const W = () => M.wb.worksheets[M.si];
+  const lastR = ws => XF.lastRow(null, ws);
+  const lastC = ws => { let n = 0; ws.eachRow({ includeEmpty: false }, row => { if (row.cellCount > n) row.eachCell({ includeEmpty: false }, c => { if (c.col > n) n = c.col; }); }); return n; };
+  const merges = ws => Object.values(ws._merges || {}).map(m => ({ top: m.top, left: m.left, bottom: m.bottom, right: m.right }));
+  const isF = v => v && typeof v === 'object' && (v.formula != null || v.sharedFormula != null);
+  const cloneV = v => v instanceof Date ? new Date(v) : v && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v;
+  const cloneS = s => s ? JSON.parse(JSON.stringify(s)) : {};
+  const rawText = cell => {
+    const v = cell && cell.value; if (v == null) return '';
+    if (isF(v)) return '=' + cell.formula;
+    if (v instanceof Date) return XF.fmt(v, 'dd/mm/yyyy');
+    if (typeof v === 'object') { if (v.richText) return v.richText.map(x => x.text).join(''); if (v.text != null) return String(v.text.richText ? v.text.richText.map(x => x.text).join('') : v.text); if (v.error) return v.error; return ''; }
+    if (typeof v === 'number') return /%/.test(cell.numFmt || '') ? +(v * 100).toPrecision(12) + '%' : String(+v.toPrecision(15));
+    if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
     return String(v);
   };
-  const parse = t => { t = t.trim(); if (t === '') return null; if (t[0] === '=') return { formula: t.slice(1) }; const n = t.replace(/,/g, ''), neg = /^\(.*\)$/.test(n); const x = Number(neg ? n.slice(1, -1) : n); if (!isNaN(x) && /\d/.test(n)) return neg ? -x : x; const d = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(t); if (d) return new Date(Date.UTC(+d[3], +d[2] - 1, +d[1])); return t; };
-  let M = null;   // current modal state
-  const close = () => { if (M && M.el) M.el.remove(); M = null; };
+  const parseIn = t => {
+    if (t === '') return { v: null };
+    if (t[0] === '=' && t.length > 1) return { v: { formula: t.slice(1).trim() } };
+    if (t[0] === "'") return { v: t.slice(1) };
+    const n = t.replace(/,/g, '').trim(), neg = /^\(.*\)$/.test(n), core = neg ? n.slice(1, -1) : n;
+    if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(core)) { if (/^0\d/.test(core) && core.length > 1 && !/\./.test(core)) return { v: t }; const x = Number(core); return { v: neg ? -x : x }; }
+    if (/^[-+]?(\d+\.?\d*|\.\d+)%$/.test(core)) return { v: Number(core.slice(0, -1)) / 100, f: '0.00%' };
+    const d = /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2}|\d{4})$/.exec(t.trim()); if (d) { const y = +d[3] < 100 ? 2000 + +d[3] : +d[3]; return { v: new Date(Date.UTC(y, +d[2] - 1, +d[1])), f: 'dd/mm/yyyy' }; }
+    return { v: t };
+  };
+  const shownOf = (ws, cell) => {
+    if (!cell || cell.value == null) return { t: '' };
+    const v = cell.value;
+    if (isF(v)) { const x = XF.value(M.cx, ws, cell.row, cell.col), k = ws.id + ':' + cell.row + ':' + cell.col; return { t: XF.fmt(x, cell.numFmt), num: typeof x === 'number', err: XF.isErr(x), fb: M.cx.bad.has(k) }; }
+    if (v instanceof Date) return { t: XF.fmt(v, cell.numFmt) };
+    if (typeof v === 'object') return { t: rawText(cell) };
+    return { t: XF.fmt(v, cell.numFmt), num: typeof v === 'number' };
+  };
+  const rangeTxt = s => s.r1 === s.r2 && s.c1 === s.c2 ? A(s.r1, s.c1) : A(s.r1, s.c1) + ':' + A(s.r2, s.c2);
+  const norm = s => ({ r1: Math.min(s.r1, s.r2), r2: Math.max(s.r1, s.r2), c1: Math.min(s.c1, s.c2), c2: Math.max(s.c1, s.c2) });
+  const clampSel = (s, ws) => { const lr = Math.max(lastR(ws), M.R), lc = Math.max(M.C, 1); return { r1: s.r1, c1: s.c1, r2: Math.min(s.r2, lr), c2: Math.min(s.c2, lc) }; };
+  const close = () => { if (M && M.el) M.el.remove(); M = null; menuOff(); };
+
   function modal(title, actions) {
     close(); const el = document.createElement('div'); el.className = 'rvm';
-    el.innerHTML = `<div class="rvb"><div class="rvh"><b>👁 Semak sebelum muat turun</b><span class="muted">${esc(title)}</span><span class="sp"></span>${actions}<button class="btn" data-rv="x">✕ Tutup</button></div><div class="rvt"></div><div class="rvg"></div></div>`;
+    el.innerHTML = `<div class="rvb"><div class="rvh"><b>👁 Semak &amp; Edit</b><span class="muted">${esc(title)}</span><span class="sp"></span>${actions}<button class="btn" data-rv="x">✕ Tutup</button></div><div class="rvt"></div><div class="rvg"></div></div>`;
     document.body.appendChild(el); M = { el }; return el;
   }
-  async function openXlsx(name, blob, onSave) {
-    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await blob.arrayBuffer());
-    const el = modal(name, `<span class="muted" id="rv-ed">0 sel diubah</span><button class="btn pri" data-rv="save">💾 Simpan &amp; muat turun</button><button class="btn" data-rv="orig">⬇ Muat turun asal</button>`);
-    Object.assign(M, { wb, name, blob, onSave, edits: 0, sheet: 0, limit: 400 });
-    el.querySelector('.rvt').innerHTML = wb.worksheets.map((w, i) => `<button data-rv="sh" data-i="${i}" class="${i ? '' : 'on'}">${esc(w.name)} <small>(${w.rowCount})</small></button>`).join('');
-    drawSheet();
+
+  /* ---------- open an xlsx ---------- */
+  async function openXlsx(name, blob, onSave, opts = {}) {
+    const ov = document.getElementById('busy'), ot = document.getElementById('busyTxt'); if (ov) { if (ot) ot.textContent = 'Membuka pratonton ' + fname(name) + '…'; ov.hidden = false; await new Promise(r => setTimeout(r, 30)); }
+    const wb = new ExcelJS.Workbook();
+    try { await wb.xlsx.load(await blob.arrayBuffer()); XF.normalize(wb); } finally { if (ov) ov.hidden = true; }
+    close(); const el = document.createElement('div'); el.className = 'rvm';
+    el.innerHTML = `<div class="rvb">
+  <div class="rvh"><b>👁 Semak &amp; Edit</b>${opts.inZip ? `<span class="muted">${esc(name)}</span>` : `<input class="in fn" id="xname" value="${esc(fname(name))}" title="Nama fail yang akan dimuat turun">`}
+    <span class="muted" id="xedc"></span><span class="sp"></span>
+    <button class="btn" data-x="opt">⚙ Pilihan muat turun</button><button class="btn" data-x="log">📝 Perubahan</button>
+    <button class="btn pri" data-x="save">💾 ${opts.inZip ? 'Simpan ke ZIP' : 'Simpan &amp; muat turun'}</button><button class="btn" data-x="orig" title="Muat turun fail asal tanpa perubahan">⬇ Asal</button><button class="btn" data-x="close">✕</button></div>
+  <div class="xtb">
+    <span class="gp"><button data-x="undo" title="Undo (Ctrl+Z)">↶</button><button data-x="redo" title="Redo (Ctrl+Y)">↷</button></span>
+    <span class="gp"><button data-x="bold" title="Tebal (Ctrl+B)"><b>B</b></button><button data-x="ital" title="Condong (Ctrl+I)"><i>I</i></button>
+      <select data-x="fill" title="Warna sel"><option value="-">🎨 Warna sel</option>${FILLS.map(([h, n]) => `<option value="${h}">${h ? '■ ' : ''}${n}</option>`).join('')}</select>
+      <select data-x="font" title="Warna tulisan"><option value="-">A Warna tulisan</option>${FONTS.map(([h, n]) => `<option value="${h}">${n}</option>`).join('')}</select></span>
+    <span class="gp"><select data-x="numf" title="Format nombor"><option value="-">Format nombor</option>${NUMF.map(([f, n]) => `<option value="${esc(f)}">${n}</option>`).join('')}</select>
+      <button data-x="dec+" title="Tambah titik perpuluhan">.0+</button><button data-x="dec-" title="Kurang titik perpuluhan">.0−</button></span>
+    <span class="gp"><button data-x="al" data-v="left" title="Kiri">⯇</button><button data-x="al" data-v="center" title="Tengah">≡</button><button data-x="al" data-v="right" title="Kanan">⯈</button>
+      <button data-x="merge" title="Cantum &amp; tengah / leraikan">⊞ Cantum</button><button data-x="border" title="Garisan semua sisi">▦ Garisan</button><button data-x="noborder" title="Buang garisan">▢</button></span>
+    <span class="gp"><button data-x="sum" title="AutoSum — jumlah sel di atas / pilihan">Σ AutoSum</button><button data-x="filld" title="Isi ke bawah (Ctrl+D)">⇩ Isi bawah</button></span>
+    <span class="gp"><button data-x="rowa" title="Sisip baris di atas">＋ Baris</button><button data-x="rowd" title="Padam baris dipilih">− Baris</button><button data-x="cola" title="Sisip lajur di kiri">＋ Lajur</button><button data-x="cold" title="Padam lajur dipilih">− Lajur</button></span>
+    <span class="gp"><button data-x="find" title="Cari &amp; ganti (Ctrl+F)">🔍 Cari</button><button data-x="vals" title="Tukar formula dalam pilihan kepada nilai">🔢 Jadi nilai</button><button data-x="help" title="Cara guna">❔</button></span>
+  </div>
+  <div class="xfb"><input class="nb" id="xnb" title="Alamat sel — taip cth D25 atau A1:C9 lalu Enter"><i>fx</i><input class="fx" id="xfx" spellcheck="false" placeholder="Nilai atau formula — mula dengan =  (cth =SUM(D5:D20))">
+    <select class="in" data-x="fnp" title="Masukkan fungsi" style="max-width:150px"><option value="">ƒ Fungsi…</option>${FNPICK.map(f => `<option>${f}</option>`).join('')}</select></div>
+  <div class="xhint" id="xhint"></div>
+  <div class="rvg" id="xgrid"></div>
+  <div class="xs"><div class="tabs" id="xtabs"></div><div class="st" id="xst"></div></div></div><textarea class="xsink" id="xsink"></textarea>`;
+    document.body.appendChild(el);
+    M = { el, wb, name, blob, onSave, opts, si: 0, cur: { r: 1, c: 1 }, sel: { r1: 1, c1: 1, r2: 1, c2: 1 }, undo: [], redo: [], log: new Map(), ops: [], skip: new Set(), clip: null, cx: new XF.Ctx(wb), edit: null };
+    drawTabs(); draw(); focusSink(); status();
   }
-  function drawSheet() {
-    const ws = M.wb.worksheets[M.sheet], R = Math.min(ws.rowCount, M.limit), C = Math.min(ws.columnCount, 60), skip = new Set(), span = {};
-    (ws.model.merges || []).forEach(m => { const [a, b] = m.split(':'); const A = ws.getCell(a), B = ws.getCell(b); span[A.row + ',' + A.col] = [B.row - A.row + 1, B.col - A.col + 1]; for (let r = A.row; r <= B.row; r++) for (let c = A.col; c <= B.col; c++) if (r !== A.row || c !== A.col) skip.add(r + ',' + c); });
-    let h = `<table><colgroup><col style="width:34px">${Array.from({ length: C }, (_, i) => `<col style="width:${Math.round(((ws.getColumn(i + 1).width) || 9) * 7 + 5)}px">`).join('')}</colgroup>`;
-    for (let r = 1; r <= R; r++) {
-      const row = ws.getRow(r); h += `<tr style="height:${Math.round((row.height || 15) * 1.33)}px"><th>${r}</th>`;
-      for (let c = 1; c <= C; c++) {
-        if (skip.has(r + ',' + c)) continue; const cell = row.getCell(c), s = [], f = cell.font || {}, al = cell.alignment || {}, b = cell.border || {}, sp = span[r + ',' + c];
-        if (f.bold) s.push('font-weight:700'); if (f.italic) s.push('font-style:italic'); if (f.underline) s.push('text-decoration:underline'); if (f.size) s.push(`font-size:${Math.max(8, Math.min(f.size, 28) * 1.1)}px`);
-        const fc = color(f.color); if (fc) s.push('color:#' + fc);
-        if (cell.fill && cell.fill.type === 'pattern' && cell.fill.pattern === 'solid') { const bg = color(cell.fill.fgColor); if (bg) s.push('background:#' + bg); }
-        ['top', 'bottom', 'left', 'right'].forEach(k => { const x = bd(b[k]); if (x) s.push(`border-${k}:${x}`); });
-        const isNum = typeof (cell.value && cell.value.result !== undefined ? cell.value.result : cell.value) === 'number';
-        s.push('text-align:' + (al.horizontal && al.horizontal !== 'general' ? (al.horizontal === 'centerContinuous' ? 'center' : al.horizontal) : isNum ? 'right' : 'left'));
-        if (al.wrapText) s.push('white-space:normal');
-        const fm = cell.value && typeof cell.value === 'object' && (cell.value.formula || cell.value.sharedFormula);
-        h += `<td contenteditable="true" data-r="${r}" data-c="${c}"${sp ? ` rowspan="${sp[0]}" colspan="${sp[1]}"` : ''} style="${s.join(';')}"${fm ? ` title="=${esc(cell.value.formula || '')}"` : ''}>${esc(shown(cell))}</td>`;
-      }
+
+  /* ---------- grid ---------- */
+  function draw(keepScroll) {
+    const ws = W(), g = M.el.querySelector('#xgrid'), top = keepScroll ? g.scrollTop : 0, left = keepScroll ? g.scrollLeft : 0;
+    M.R = Math.max(lastR(ws) + 25, 60); M.C = Math.min(Math.max(lastC(ws) + 4, Math.max(ws.columnCount, 12)), 200);
+    M.mg = merges(ws); M.span = new Map(); M.hide = new Set();
+    M.mg.forEach(m => { M.span.set(KEY(m.top, m.left), m); for (let r = m.top; r <= m.bottom; r++) for (let c = m.left; c <= m.right; c++) if (r !== m.top || c !== m.left) M.hide.add(KEY(r, c)); });
+    M.tds = new Map(); M.ftds = []; M.drawn = 0; M.styleCss = new WeakMap();
+    let h = `<div class="xw"><table class="xg"><colgroup><col style="width:42px">`;
+    for (let c = 1; c <= M.C; c++) { const col = ws.getColumn(c); h += `<col style="width:${col.hidden ? 4 : Math.round(((col.width) || 9) * 7 + 5)}px">`; }
+    h += `</colgroup><thead><tr><th class="cn" data-h="all" title="Pilih semua"></th>`;
+    for (let c = 1; c <= M.C; c++) h += `<th data-h="c" data-c="${c}">${XF.colS(c)}</th>`;
+    h += `</tr></thead><tbody></tbody></table></div>`;
+    g.innerHTML = h; M.tb = g.querySelector('tbody'); M.wrap = g.querySelector('.xw');
+    more(Math.max(CHUNK, (keepScroll && M.keepDrawn) || 0)); g.scrollTop = top; g.scrollLeft = left;
+    freeze(ws); paint(); showCur();
+  }
+  // the file's frozen panes (header rows / first columns) stay visible while scrolling, as in Excel
+  function freeze(ws) {
+    const v = (ws.views || [])[0] || {}, ys = v.state === 'frozen' ? v.ySplit || 0 : 0, xs = v.state === 'frozen' ? v.xSplit || 0 : 0;
+    if (ys) { let top = M.el.querySelector('.xg thead tr').offsetHeight; for (let r = 1; r <= Math.min(ys, M.drawn, 12); r++) { const tr = M.tb.rows[r - 1]; for (const c of tr.cells) { c.style.position = 'sticky'; c.style.top = top + 'px'; c.style.zIndex = c.tagName === 'TH' ? 4 : 2; if (c.tagName === 'TD' && !c.style.backgroundColor) c.style.backgroundColor = '#fff'; } if (r === ys) for (const c of tr.cells) c.style.borderBottom = '2px solid #9aa5b8'; top += tr.offsetHeight; } }
+    if (xs) { const w = [...M.el.querySelectorAll('.xg col')].map(c => parseFloat(c.style.width)); for (const tr of M.tb.rows) for (const c of tr.cells) { const k = +c.dataset.c; if (c.tagName !== 'TD' || k > xs || c.colSpan > 1) continue; let left = w[0]; for (let i = 1; i < k; i++) left += w[i]; c.style.position = 'sticky'; c.style.left = left + 'px'; c.style.zIndex = Math.max(+c.style.zIndex || 0, 1); if (!c.style.backgroundColor) c.style.backgroundColor = '#fff'; if (k === xs) c.style.borderRight = '2px solid #9aa5b8'; } }
+  }
+  function cssOf(cell) {
+    const s = [], f = cell.font || {}, al = cell.alignment || {}, b = cell.border || {};
+    if (f.bold) s.push('font-weight:700'); if (f.italic) s.push('font-style:italic'); if (f.underline) s.push('text-decoration:underline'); if (f.size && f.size !== 11) s.push(`font-size:${Math.max(8, Math.min(f.size, 28) * 1.1)}px`);
+    const fc = color(f.color); if (fc && fc !== '000000') s.push('color:#' + fc);
+    if (cell.fill && cell.fill.type === 'pattern' && cell.fill.pattern === 'solid') { const bg = color(cell.fill.fgColor); if (bg) s.push('background-color:#' + bg); }
+    ['top', 'bottom', 'left', 'right'].forEach(k => { const x = bd(b[k]); if (x) s.push(`border-${k}:${x}`); });
+    if (al.wrapText) s.push('white-space:normal'); if (al.vertical === 'middle') s.push('vertical-align:middle'); else if (al.vertical === 'top') s.push('vertical-align:top');
+    return s.join(';');
+  }
+  function tdHtml(ws, r, c) {
+    const k = KEY(r, c); if (M.hide.has(k)) return '';
+    const cell = ws.findCell(r, c), sp = M.span.get(k), x = cell ? shownOf(ws, cell) : { t: '' };
+    let st = cell ? cssOf(cell) : '';
+    const al = cell && cell.alignment || {}; const ha = al.horizontal && al.horizontal !== 'general' ? (al.horizontal === 'centerContinuous' ? 'center' : al.horizontal === 'fill' || al.horizontal === 'justify' || al.horizontal === 'distributed' ? 'left' : al.horizontal) : x.num || x.err ? 'right' : '';
+    if (ha) st += ';text-align:' + ha;
+    const cls = [x.err ? 'er' : '', x.fb ? 'fb' : '', M.log.has(W().name + '!' + A(r, c)) ? 'ed' : ''].filter(Boolean).join(' ');
+    return `<td data-c="${c}"${sp ? ` rowspan="${sp.bottom - sp.top + 1}" colspan="${sp.right - sp.left + 1}"` : ''}${cls ? ` class="${cls}"` : ''}${st ? ` style="${st}"` : ''}>${esc(x.t)}</td>`;
+  }
+  function more(n) {
+    const ws = W(), to = Math.min(M.R, M.drawn + n); if (to <= M.drawn) return;
+    let h = '';
+    for (let r = M.drawn + 1; r <= to; r++) {
+      const row = ws.findRow(r), hid = row && row.hidden;
+      h += `<tr data-r="${r}" style="height:${hid ? 4 : Math.round(((row && row.height) || 15) * 1.33)}px"><th data-h="r" data-r="${r}">${r}</th>`;
+      for (let c = 1; c <= M.C; c++) h += tdHtml(ws, r, c);
       h += '</tr>';
     }
-    h += '</table>' + (ws.rowCount > R ? `<div class="rvmore"><button class="btn" data-rv="more">Tunjuk lagi (${R} / ${ws.rowCount} baris)</button></div>` : '');
-    M.el.querySelector('.rvg').innerHTML = h;
+    const from = M.drawn; M.tb.insertAdjacentHTML('beforeend', h); M.drawn = to;
+    const rows = M.tb.rows; for (let i = from; i < to; i++) { const tr = rows[i], r = i + 1; for (const td of tr.cells) { if (td.tagName !== 'TD') continue; const c = +td.dataset.c; td.r = r; td.c = c; M.tds.set(KEY(r, c), td); const cell = ws.findCell(r, c); if (cell && isF(cell.value)) M.ftds.push(td); } }
+    paint();
   }
+  const ensure = r => { if (r > M.R) { M.R = r + 25; } if (r > M.drawn) more(r - M.drawn + 50); };
+  function refreshCell(td) {
+    const ws = W(), cell = ws.findCell(td.r, td.c), x = cell ? shownOf(ws, cell) : { t: '' };
+    td.textContent = x.t; td.classList.toggle('er', !!x.err); td.classList.toggle('fb', !!x.fb); td.classList.toggle('ed', M.log.has(ws.name + '!' + A(td.r, td.c)));
+    if (cell) { const al = cell.alignment || {}; td.style.cssText = cssOf(cell) + (al.horizontal && al.horizontal !== 'general' ? ';text-align:' + (al.horizontal === 'centerContinuous' ? 'center' : al.horizontal) : x.num || x.err ? ';text-align:right' : ''); }
+  }
+  // values changed → recalc and refresh every formula on screen plus the touched cells
+  function recalc(touched) {
+    M.cx = new XF.Ctx(M.wb);
+    const ws = W(), done = new Set();
+    (touched || []).forEach(([si, r, c]) => { if (si !== M.si) return; const td = M.tds.get(KEY(r, c)); if (td) { refreshCell(td); done.add(td); } const cell = ws.findCell(r, c); if (td && cell && isF(cell.value) && !M.ftds.includes(td)) M.ftds.push(td); });
+    M.ftds.forEach(td => { if (!done.has(td) && td.isConnected) refreshCell(td); });
+    status(); showCur();
+  }
+
+  /* ---------- selection ---------- */
+  let painted = [];
+  function paint() {
+    painted.forEach(td => td.classList.remove('s', 'a')); painted = [];
+    M.el.querySelectorAll('.xg th.hs').forEach(th => th.classList.remove('hs'));
+    const s = norm(M.sel), r2 = Math.min(s.r2, M.drawn), multi = s.r1 !== s.r2 || s.c1 !== s.c2;
+    if ((r2 - s.r1 + 1) * (s.c2 - s.c1 + 1) <= 60000) for (let r = s.r1; r <= r2; r++) for (let c = s.c1; c <= s.c2; c++) { const td = M.tds.get(KEY(r, c)); if (td) { if (multi) td.classList.add('s'); painted.push(td); } }
+    const a = M.tds.get(KEY(M.cur.r, M.cur.c)); if (a) { a.classList.add('a'); painted.push(a); }
+    const hd = M.el.querySelector('.xg thead tr'); for (let c = s.c1; c <= Math.min(s.c2, M.C); c++) { const th = hd && hd.cells[c]; if (th) th.classList.add('hs'); }
+    for (let r = s.r1; r <= Math.min(r2, s.r1 + 3000); r++) { const tr = M.tb.rows[r - 1]; if (tr) tr.cells[0].classList.add('hs'); }
+  }
+  function select(r, c, extend) {
+    r = Math.max(1, r); c = Math.max(1, Math.min(c, M.C));
+    if (extend) { M.sel = { r1: M.anchor.r, c1: M.anchor.c, r2: r, c2: c }; }
+    else { const m = M.span.get(KEY(r, c)); M.cur = { r, c }; M.anchor = { r, c }; M.sel = m ? { r1: m.top, c1: m.left, r2: m.bottom, c2: m.right } : { r1: r, c1: c, r2: r, c2: c }; }
+    ensure(Math.max(r, M.cur.r)); paint(); showCur(); status(); scrollTo(r, c);
+  }
+  function scrollTo(r, c) {
+    const td = M.tds.get(KEY(r, c)); if (!td) return; const g = M.el.querySelector('#xgrid');
+    const top = td.offsetTop, left = td.offsetLeft; const hh = 22, lw = 44;
+    if (top - hh < g.scrollTop) g.scrollTop = top - hh; else if (top + td.offsetHeight > g.scrollTop + g.clientHeight) g.scrollTop = top + td.offsetHeight - g.clientHeight + 4;
+    if (left - lw < g.scrollLeft) g.scrollLeft = left - lw; else if (left + td.offsetWidth > g.scrollLeft + g.clientWidth) g.scrollLeft = left + td.offsetWidth - g.clientWidth + 4;
+  }
+  function showCur() {
+    if (!M || M.edit) return; const ws = W(), cell = ws.findCell(M.cur.r, M.cur.c), s = norm(M.sel);
+    M.el.querySelector('#xnb').value = rangeTxt(s.r1 === s.r2 && s.c1 === s.c2 ? s : s).replace(/^(.*)$/, x => s.r1 === s.r2 && s.c1 === s.c2 ? A(M.cur.r, M.cur.c) : x);
+    M.el.querySelector('#xfx').value = rawText(cell);
+    const k = ws.id + ':' + M.cur.r + ':' + M.cur.c; const hint = M.el.querySelector('#xhint');
+    hint.innerHTML = M.cx.bad.has(k) ? `<span class="bad">⚠ ${esc(M.cx.bad.get(k))}</span>` : '';
+  }
+  function status() {
+    if (!M || !M.el) return; const ws = W(), s = clampSel(norm(M.sel), ws); let n = 0, cnt = 0, sum = 0;
+    if ((s.r2 - s.r1 + 1) * (s.c2 - s.c1 + 1) <= 400000) for (let r = s.r1; r <= s.r2; r++) for (let c = s.c1; c <= s.c2; c++) { const v = XF.value(M.cx, ws, r, c); if (v == null || v === '') continue; cnt++; if (typeof v === 'number') { n++; sum += v; } }
+    const f = v => XF.fmt(v, '#,##0.00');
+    const multi = s.r1 !== s.r2 || s.c1 !== s.c2;
+    M.el.querySelector('#xst').innerHTML = (multi && n ? `<span>Purata: <b>${f(sum / n)}</b></span><span>Bilangan: <b>${cnt}</b></span><span>Jumlah: <b>${f(sum)}</b></span>` : multi ? `<span>Bilangan: <b>${cnt}</b></span>` : '')
+      + `<span class="muted">${M.cx.bad.size ? `⚠ ${M.cx.bad.size} formula guna nilai asal · ` : ''}${M.log.size + M.ops.length} perubahan</span>`;
+    const ed = M.el.querySelector('#xedc'); if (ed) ed.textContent = M.log.size + M.ops.length ? `● ${M.log.size + M.ops.length} perubahan belum disimpan` : '';
+  }
+  function drawTabs() {
+    M.el.querySelector('#xtabs').innerHTML = M.wb.worksheets.map((w, i) => `<button data-x="tab" data-i="${i}" class="${i === M.si ? 'on' : ''} ${M.skip.has(i) ? 'off' : ''}" title="${M.skip.has(i) ? 'Sheet ini TIDAK akan dimuat turun · ' : ''}Dwiklik untuk tukar nama">${esc(w.name)}</button>`).join('');
+  }
+  const focusSink = () => { const s = M && M.el && M.el.querySelector('#xsink'); if (s && !M.edit) { s.value = ' '; s.select(); s.focus({ preventScroll: true }); } };
+
+  /* ---------- changes (with undo) ---------- */
+  function snapCell(ws, r, c) { const cell = ws.findCell(r, c); return cell ? { v: cloneV(cell.value), s: cloneS(cell.style) } : { v: null, s: {} }; }
+  function applySnap(ws, r, c, x) { const cell = ws.getCell(r, c); cell.value = cloneV(x.v); cell.style = cloneS(x.s); }
+  // fn(cell) mutates; records before/after for undo and the change log
+  function change(cells, fn, label) {
+    const ws = W(), list = [], touched = [];
+    cells.forEach(([r, c]) => {
+      const before = snapCell(ws, r, c), cell = ws.getCell(r, c); const t0 = shownOf(ws, cell).t;
+      if (fn(cell, r, c) === false) return;
+      list.push({ r, c, before, after: snapCell(ws, r, c), t0 }); touched.push([M.si, r, c]);
+    });
+    if (!list.length) return;
+    M.undo.push({ t: 'cells', si: M.si, list, label }); M.redo = [];
+    M.cx = new XF.Ctx(M.wb);
+    list.forEach(x => { const key = ws.name + '!' + A(x.r, x.c), old = M.log.get(key); M.log.set(key, { si: M.si, r: x.r, c: x.c, from: old ? old.from : x.t0, to: shownOf(ws, ws.getCell(x.r, x.c)).t, what: label }); });
+    recalc(touched);
+  }
+  const selCells = (only) => { const ws = W(), s = clampSel(norm(M.sel), ws), out = []; for (let r = s.r1; r <= s.r2; r++) for (let c = s.c1; c <= s.c2; c++) if (!M.hide.has(KEY(r, c)) && (!only || ws.findCell(r, c))) out.push([r, c]); return out; };
+  function restyle(cell, k, v) { const s = cloneS(cell.style); if (v === undefined) delete s[k]; else s[k] = v; cell.style = s; }
+
+  function setFromText(r, c, text, si) {
+    if (si != null && si !== M.si) { M.si = si; drawTabs(); draw(); }
+    const p = parseIn(text);
+    if (p.v && p.v.formula) { try { XF.parse(p.v.formula); } catch (e) { if (!confirm(`Formula ini ada masalah: ${e.message}\n\nSimpan juga?`)) return false; } }
+    change([[r, c]], cell => { const old = cell.value; if (JSON.stringify(old) === JSON.stringify(p.v) && !(old instanceof Date)) return false; cell.value = p.v; if (p.f && (!cell.numFmt || cell.numFmt === 'General')) restyle(cell, 'numFmt', p.f); }, 'nilai');
+    return true;
+  }
+
+  /* ---------- in-cell editor ---------- */
+  function startEdit(init, inBar) {
+    if (M.edit) return; const ws = W(), r = M.cur.r, c = M.cur.c, cell = ws.findCell(r, c), orig = rawText(cell);
+    const fx = M.el.querySelector('#xfx');
+    if (inBar) { M.edit = { r, c, si: M.si, inp: fx, orig, bar: true }; if (init != null) fx.value = init; fx.focus(); hintFn(); return; }
+    ensure(r); scrollTo(r, c);
+    const td = M.tds.get(KEY(r, c)); if (!td) return;
+    const inp = document.createElement('input'); inp.className = 'xe'; inp.spellcheck = false;
+    const wr = M.wrap.getBoundingClientRect(), tr = td.getBoundingClientRect();
+    Object.assign(inp.style, { left: tr.left - wr.left + 'px', top: tr.top - wr.top + 'px', width: Math.max(tr.width, 60) + 'px', height: Math.max(tr.height, 20) + 'px' });
+    const cs = getComputedStyle(td); inp.style.fontWeight = cs.fontWeight; inp.style.textAlign = cs.textAlign === 'right' && init == null ? 'right' : 'left';
+    inp.value = init != null ? init : orig; M.wrap.appendChild(inp); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+    M.edit = { r, c, si: M.si, inp, orig }; fx.value = inp.value; grow(); hintFn();
+  }
+  function grow() { const e = M.edit; if (!e || e.bar) return; e.inp.style.width = '1px'; e.inp.style.width = Math.max(parseFloat(e.inp.dataset.w || 0), e.inp.scrollWidth + 8, 60) + 'px'; }
+  function endEdit(commit, move) {
+    const e = M.edit; if (!e) return; M.edit = null; M.pt = null;
+    const txt = e.inp.value; if (!e.bar) e.inp.remove(); clearPt();
+    if (commit && txt !== e.orig) { if (setFromText(e.r, e.c, txt, e.si) === false) { M.edit = null; } }
+    else if (e.si !== M.si) { M.si = e.si; drawTabs(); draw(); }
+    if (move) { const [dr, dc] = move; select(e.r + dr, e.c + dc); } else { showCur(); }
+    M.el.querySelector('#xhint').innerHTML = ''; showCur(); focusSink();
+  }
+  // function-signature hint for the function the caret is inside
+  function hintFn() {
+    const e = M.edit, h = M.el.querySelector('#xhint'); if (!e) return;
+    const v = e.inp.value.slice(0, e.inp.selectionStart || e.inp.value.length); if (v[0] !== '=') { h.innerHTML = ''; return; }
+    let depth = 0, name = null; for (let i = v.length - 1; i >= 0; i--) { const ch = v[i]; if (ch === ')') depth++; else if (ch === '(') { if (depth) depth--; else { const m = /([A-Za-z.]+)\s*$/.exec(v.slice(0, i)); name = m && m[1].toUpperCase(); break; } } }
+    const sig = name && SIG[name]; h.innerHTML = sig ? `<b>${esc(sig.split(' — ')[0])}</b>${sig.includes(' — ') ? ' — ' + esc(sig.split(' — ')[1]) : ''} · klik sel / seret julat untuk masukkan rujukan` : '💡 Klik sel atau seret julat untuk masukkan rujukan ke dalam formula. Enter = simpan, Esc = batal.';
+  }
+  // formula "point mode": clicking cells while typing a formula inserts their address
+  const canPoint = () => { const e = M.edit; if (!e || e.inp.value[0] !== '=') return false; if (M.pt) return true; const pos = e.inp.selectionStart, before = e.inp.value.slice(0, pos).replace(/\s+$/, ''); return /[=(,+\-*/^&<>:;]$/.test(before); };
+  function pointRef(s) {
+    const e = M.edit, txt = (e.si !== M.si ? (n => /^[A-Za-z_][\w.]*$/.test(n) ? n : `'${n.replace(/'/g, "''")}'`)(W().name) + '!' : '') + rangeTxt(norm(s));
+    if (!M.pt) { const p = e.inp.selectionStart; M.pt = { s: p, e: p }; }
+    e.inp.value = e.inp.value.slice(0, M.pt.s) + txt + e.inp.value.slice(M.pt.e); M.pt.e = M.pt.s + txt.length;
+    e.inp.setSelectionRange(M.pt.e, M.pt.e); if (!e.bar) M.el.querySelector('#xfx').value = e.inp.value; grow(); hintFn();
+    clearPt(); const n = norm(s); for (let r = n.r1; r <= Math.min(n.r2, M.drawn); r++) for (let c = n.c1; c <= n.c2; c++) { const td = M.tds.get(KEY(r, c)); if (td) { td.classList.add('pt'); M.ptd.push(td); } }
+  }
+  function clearPt() { (M.ptd || []).forEach(td => td.classList.remove('pt')); M.ptd = []; }
+  // the in-cell editor lives in the grid; when the user switches sheet while pointing, the edit moves to the formula bar
+  function switchSheet(i) {
+    if (M.edit && !M.edit.bar) { const e = M.edit, v = e.inp.value; if (v[0] === '=') { e.inp.remove(); const fx = M.el.querySelector('#xfx'); fx.value = v; M.edit = { ...e, inp: fx, bar: true }; } else endEdit(true); }
+    else if (M.edit && M.edit.bar && M.edit.inp.value[0] !== '=') endEdit(true);
+    M.si = i; M.pt = null; M.cur = { r: 1, c: 1 }; M.sel = { r1: 1, c1: 1, r2: 1, c2: 1 }; M.anchor = { r: 1, c: 1 }; drawTabs(); draw(); status();
+    if (M.edit) { M.edit.inp.focus(); hintFn(); }
+  }
+
+  /* ---------- structural edits (rows / columns) ---------- */
+  function structural(axis, at, n, label) {
+    const ws = W(), name = ws.name, before = ws.model, others = [];
+    const mg = merges(ws); mg.forEach(m => ws.unMergeCells(m.top, m.left, m.bottom, m.right));
+    const widths = []; if (axis === 'c') for (let c = 1; c <= Math.max(ws.columnCount, M.C); c++) widths.push(ws.getColumn(c).width);
+    if (axis === 'r') {
+      if (n > 0) { ws.spliceRows(at, 0, ...Array.from({ length: n }, () => [])); const src = at > 1 ? ws.getRow(at - 1) : null; if (src) for (let i = 0; i < n; i++) { const row = ws.getRow(at + i); if (src.height) row.height = src.height; src.eachCell({ includeEmpty: true }, (cell, c) => { row.getCell(c).style = cloneS(cell.style); }); } }
+      else ws.spliceRows(at, -n);
+    } else {
+      if (n > 0) { ws.spliceColumns(at, 0, ...Array.from({ length: n }, () => [])); widths.splice(at - 1, 0, ...Array(n).fill(widths[at - 2] || 9)); }
+      else { ws.spliceColumns(at, -n); widths.splice(at - 1, -n); }
+      widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    }
+    // every formula in the workbook that points into this sheet
+    M.wb.worksheets.forEach((w, si) => XF.eachFormula(w, cell => {
+      const f = cell.formula, nf = XF.shiftF(f, w.name, name, axis, at, n); if (nf === f) return;
+      if (w !== ws) others.push({ si, r: cell.row, c: cell.col, before: f, after: nf });
+      cell.value = { formula: nf, result: cell.value.result };
+    }));
+    // merges move with the rows / columns (dropped when fully deleted)
+    const lo = at, hi = at - n - 1, k1 = axis === 'r' ? 'top' : 'left', k2 = axis === 'r' ? 'bottom' : 'right';
+    mg.forEach(m => {
+      let a = m[k1], b = m[k2];
+      if (n > 0) { if (a >= at) a += n; if (b >= at) b += n; }
+      else { const d = -n; a = a > hi ? a - d : a >= lo ? lo : a; b = b > hi ? b - d : b >= lo ? lo - 1 : b; if (b < a) return; }
+      const x = { ...m, [k1]: a, [k2]: b }; if (x.top === x.bottom && x.left === x.right) return; try { ws.mergeCells(x.top, x.left, x.bottom, x.right); } catch (e) { }
+    });
+    // change log entries move too
+    const moved = new Map(); M.log.forEach((v, key) => {
+      if (v.si !== M.si) { moved.set(key, v); return; } const p = axis === 'r' ? v.r : v.c;
+      let q = p; if (n > 0 && p >= at) q = p + n; else if (n < 0) { if (p >= lo && p <= hi) return; if (p > hi) q = p + n; }
+      const nv = { ...v, [axis === 'r' ? 'r' : 'c']: q }; moved.set(name + '!' + A(nv.r, nv.c), nv);
+    }); M.log = moved;
+    M.ops.push({ si: M.si, label }); M.undo.push({ t: 'struct', si: M.si, before, after: null, others, label, log: null }); M.redo = [];
+    M.cx = new XF.Ctx(M.wb); M.keepDrawn = M.drawn; draw(true); status();
+  }
+  function rowsOp(kind) {
+    const s = norm(M.sel), n = s.r2 - s.r1 + 1;
+    if (kind === 'ins') structural('r', s.r1, n, `Sisip ${n} baris di ${s.r1}`);
+    else if (kind === 'insb') structural('r', s.r2 + 1, n, `Sisip ${n} baris di ${s.r2 + 1}`);
+    else { if (n > 50 && !confirm(`Padam ${n} baris (${s.r1}–${s.r2})?`)) return; structural('r', s.r1, -n, `Padam baris ${s.r1}${n > 1 ? '–' + s.r2 : ''}`); select(s.r1, M.cur.c); }
+  }
+  function colsOp(kind) {
+    const s = norm(M.sel), n = s.c2 - s.c1 + 1;
+    if (kind === 'ins') structural('c', s.c1, n, `Sisip ${n} lajur di ${XF.colS(s.c1)}`);
+    else if (kind === 'insr') structural('c', s.c2 + 1, n, `Sisip ${n} lajur di ${XF.colS(s.c2 + 1)}`);
+    else { structural('c', s.c1, -n, `Padam lajur ${XF.colS(s.c1)}${n > 1 ? '–' + XF.colS(s.c2) : ''}`); select(M.cur.r, s.c1); }
+  }
+
+  /* ---------- undo / redo ---------- */
+  function undoRedo(isUndo) {
+    const from = isUndo ? M.undo : M.redo, to = isUndo ? M.redo : M.undo, x = from.pop(); if (!x) { toast(isUndo ? 'Tiada lagi untuk undo' : 'Tiada lagi untuk redo', 'warn'); return; }
+    if (endEdit) M.edit && endEdit(false);
+    const ws = M.wb.worksheets[x.si];
+    if (x.t === 'cells') {
+      x.list.forEach(e => applySnap(ws, e.r, e.c, isUndo ? e.before : e.after));
+      x.list.forEach(e => { const key = ws.name + '!' + A(e.r, e.c), l = M.log.get(key); if (isUndo && l && l.from === e.t0) M.log.delete(key); else if (!isUndo) M.log.set(key, { si: x.si, r: e.r, c: e.c, from: e.t0, to: '', what: x.label }); });
+    } else {
+      const cur = ws.model, snap = isUndo ? x.before : x.after; ws.model = snap; if (isUndo) x.after = cur; else x.before = cur;
+      merges(ws).forEach(m => { try { ws.unMergeCells(m.top, m.left, m.bottom, m.right); } catch (e) { } });   // ExcelJS's model setter ignores merges → put them back by hand
+      (snap.merges || []).forEach(rg => { try { ws.mergeCells(rg); } catch (e) { } });
+      x.others.forEach(o => { const c = M.wb.worksheets[o.si].getCell(o.r, o.c); c.value = { formula: isUndo ? o.before : o.after }; });
+      if (isUndo) M.ops = M.ops.filter(o => o !== M.ops[M.ops.length - 1]); else M.ops.push({ si: x.si, label: x.label });
+    }
+    to.push(x);
+    if (x.si !== M.si) { M.si = x.si; drawTabs(); }
+    M.cx = new XF.Ctx(M.wb); M.keepDrawn = M.drawn; draw(true); status(); toast((isUndo ? 'Undo: ' : 'Redo: ') + (x.label || 'perubahan'));
+  }
+
+  /* ---------- toolbar actions ---------- */
+  function autoSum() {
+    const ws = W(), s = norm(M.sel);
+    if (s.r1 !== s.r2 || s.c1 !== s.c2) {     // range chosen → total under each column of it
+      const r = s.r2 + 1, cells = []; for (let c = s.c1; c <= s.c2; c++) cells.push([r, c]);
+      change(cells, (cell, rr, c) => { cell.value = { formula: `SUM(${A(s.r1, c)}:${A(s.r2, c)})` }; restyle(cell, 'font', { ...(cell.font || {}), bold: true }); }, 'AutoSum');
+      select(r, s.c1); return;
+    }
+    const { r, c } = M.cur; let top = r - 1; const isTot = rr => { const x = ws.findCell(rr, c); return x && isF(x.value) && /^\s*(SUM|SUBTOTAL)\(/i.test(x.formula); }, numAt = rr => typeof XF.value(M.cx, ws, rr, c) === 'number' && !(rr < top && isTot(rr));
+    while (top >= 1 && !numAt(top)) { if (r - top > 3) break; top--; }
+    let a = top; while (a > 1 && (numAt(a - 1))) a--;
+    if (top >= 1 && numAt(top)) startEdit(`=SUM(${A(a, c)}:${A(top, c)})`);
+    else { let l = c - 1, b = l; while (b > 1 && typeof XF.value(M.cx, ws, r, b - 1) === 'number') b--; startEdit(l >= 1 ? `=SUM(${A(r, b)}:${A(r, l)})` : '=SUM()'); }
+  }
+  function fill(dir) {
+    const ws = W(), s = clampSel(norm(M.sel), ws), cells = [];
+    if (dir === 'd') { if (s.r1 === s.r2) { if (s.r1 < 2) return; s.r1--; } for (let r = s.r1 + 1; r <= s.r2; r++) for (let c = s.c1; c <= s.c2; c++) cells.push([r, c]); }
+    else { if (s.c1 === s.c2) { if (s.c1 < 2) return; s.c1--; } for (let r = s.r1; r <= s.r2; r++) for (let c = s.c1 + 1; c <= s.c2; c++) cells.push([r, c]); }
+    change(cells, (cell, r, c) => { const sr = dir === 'd' ? s.r1 : r, sc = dir === 'd' ? c : s.c1, src = ws.getCell(sr, sc); cell.value = isF(src.value) ? { formula: XF.translate(src.formula, r - sr, c - sc) } : cloneV(src.value); cell.style = cloneS(src.style); }, dir === 'd' ? 'Isi bawah' : 'Isi kanan');
+  }
+  function toValues() {
+    const ws = W(); change(selCells(true).filter(([r, c]) => isF(ws.findCell(r, c).value)), (cell, r, c) => { const v = XF.value(M.cx, ws, r, c); cell.value = XF.isErr(v) ? null : v; }, 'Formula → nilai');
+  }
+  function decimals(d) {
+    const ws = W(), cur = ws.findCell(M.cur.r, M.cur.c), f = (cur && cur.numFmt) || '#,##0.00', m = /0(\.0+)?/.exec(f); const k = Math.max(0, (m && m[1] ? m[1].length - 1 : 0) + d);
+    const nf = /#,##0/.test(f) ? '#,##0' + (k ? '.' + '0'.repeat(k) : '') : /%/.test(f) ? '0' + (k ? '.' + '0'.repeat(k) : '') + '%' : '0' + (k ? '.' + '0'.repeat(k) : '');
+    change(selCells(), cell => restyle(cell, 'numFmt', nf), 'Format nombor');
+  }
+  function mergeToggle() {
+    const ws = W(), s = norm(M.sel), m = M.span.get(KEY(s.r1, s.c1));
+    const before = ws.model; let label;
+    if (m && m.bottom === s.r2 && m.right === s.c2) { ws.unMergeCells(m.top, m.left, m.bottom, m.right); label = 'Leraikan ' + rangeTxt({ r1: m.top, c1: m.left, r2: m.bottom, c2: m.right }); }
+    else { if (s.r1 === s.r2 && s.c1 === s.c2) return; try { ws.mergeCells(s.r1, s.c1, s.r2, s.c2); } catch (e) { toast('Tak boleh cantum: ' + e.message, 'warn'); return; } const c = ws.getCell(s.r1, s.c1); restyle(c, 'alignment', { ...(c.alignment || {}), horizontal: 'center', vertical: 'middle' }); label = 'Cantum ' + rangeTxt(s); }
+    M.ops.push({ si: M.si, label }); M.undo.push({ t: 'struct', si: M.si, before, after: null, others: [], label }); M.redo = [];
+    M.keepDrawn = M.drawn; draw(true); status();
+  }
+  function clearSel() { const ws = W(); change(selCells(true).filter(([r, c]) => ws.findCell(r, c).value != null), cell => { cell.value = null; }, 'Kosongkan'); }
+
+  /* ---------- copy / paste ---------- */
+  function copy(e, cut) {
+    const ws = W(), s = clampSel(norm(M.sel), ws), rows = [], tsv = [];
+    for (let r = s.r1; r <= s.r2; r++) { const row = [], t = []; for (let c = s.c1; c <= s.c2; c++) { const cell = ws.findCell(r, c); row.push({ v: cell ? cloneV(cell.value) : null, s: cell ? cloneS(cell.style) : {}, f: cell && isF(cell.value) ? cell.formula : null, val: XF.value(M.cx, ws, r, c) }); t.push(cell ? shownOf(ws, cell).t : ''); } rows.push(row); tsv.push(t.join('\t')); }
+    M.clip = { r1: s.r1, c1: s.c1, rows, tsv: tsv.join('\r\n'), cut, si: M.si };
+    if (e && e.clipboardData) { e.clipboardData.setData('text/plain', M.clip.tsv); e.preventDefault(); }
+    else if (navigator.clipboard) navigator.clipboard.writeText(M.clip.tsv).catch(() => { });
+    toast(`${cut ? 'Potong' : 'Salin'} ${rangeTxt(s)} — pilih sel lain dan Ctrl+V`);
+  }
+  function paste(text, valuesOnly) {
+    const ws = W(), s = norm(M.sel), same = M.clip && (text == null || text.replace(/\r/g, '').trim() === M.clip.tsv.replace(/\r/g, '').trim());
+    if (same) {
+      const C = M.clip, h = C.rows.length, w = C.rows[0].length, sh = s.r2 - s.r1 + 1, sw = s.c2 - s.c1 + 1;
+      const H = sh % h === 0 ? sh : h, Wd = sw % w === 0 ? sw : w, cells = [];
+      for (let i = 0; i < H; i++) for (let j = 0; j < Wd; j++) cells.push([s.r1 + i, s.c1 + j]);
+      change(cells, (cell, r, c) => { const x = C.rows[(r - s.r1) % h][(c - s.c1) % w], sr = C.r1 + (r - s.r1) % h, sc = C.c1 + (c - s.c1) % w;
+        if (valuesOnly) { cell.value = x.f != null ? (XF.isErr(x.val) ? null : x.val) : cloneV(x.v); return; }
+        cell.value = x.f != null ? { formula: C.cut ? x.f : XF.translate(x.f, r - sr, c - sc) } : cloneV(x.v); cell.style = cloneS(x.s); }, valuesOnly ? 'Tampal nilai' : 'Tampal');
+      if (C.cut && !valuesOnly) { const src = []; const prev = M.si; M.si = C.si; for (let i = 0; i < h; i++) for (let j = 0; j < w; j++) { const r = C.r1 + i, c = C.c1 + j; if (r >= s.r1 && r < s.r1 + H && c >= s.c1 && c < s.c1 + Wd) continue; src.push([r, c]); } if (src.length) change(src, cell => { cell.value = null; cell.style = {}; }, 'Potong'); M.si = prev; M.clip = null; if (prev !== C.si) draw(true); }
+      M.sel = { r1: s.r1, c1: s.c1, r2: s.r1 + H - 1, c2: s.c1 + Wd - 1 }; paint(); return;
+    }
+    if (!text) return;
+    const rows = text.replace(/\r/g, '').replace(/\n$/, '').split('\n').map(l => l.split('\t')), cells = [];
+    rows.forEach((row, i) => row.forEach((t, j) => cells.push([s.r1 + i, s.c1 + j])));
+    change(cells, (cell, r, c) => { const p = parseIn(rows[r - s.r1][c - s.c1]); cell.value = p.v; if (p.f && (!cell.numFmt || cell.numFmt === 'General')) restyle(cell, 'numFmt', p.f); }, 'Tampal');
+    M.sel = { r1: s.r1, c1: s.c1, r2: s.r1 + rows.length - 1, c2: s.c1 + Math.max(...rows.map(r => r.length)) - 1 }; paint();
+  }
+
+  /* ---------- panels: options, change log, find, help ---------- */
+  function panel(html) { const g = M.el.querySelector('.rvb'); let p = g.querySelector('.xpan'); if (p && p.dataset.k === html.k) { p.remove(); return null; } if (p) p.remove(); p = document.createElement('div'); p.className = 'xpan'; p.dataset.k = html.k; p.innerHTML = html.h + `<div style="text-align:right;margin-top:8px"><button class="btn sm" data-x="pclose">Tutup</button></div>`; p.style.top = '120px'; g.style.position = 'relative'; g.appendChild(p); return p; }
+  function optPanel() {
+    const bad = M.wb.worksheets.length;
+    panel({ k: 'opt', h: `<h4>⚙ Pilihan muat turun</h4>
+      <div class="muted" style="margin-bottom:6px">Pilih sheet yang hendak dimasukkan dalam fail:</div>
+      ${M.wb.worksheets.map((w, i) => `<label><input type="checkbox" data-x="inc" data-i="${i}" ${M.skip.has(i) ? '' : 'checked'}> ${esc(w.name)} <span class="muted">(${lastR(w)} baris)</span></label>`).join('')}
+      <hr style="border:0;border-top:1px solid #eef1f6">
+      <label><input type="checkbox" id="xvo" ${M.valuesOnly ? 'checked' : ''} data-x="vo"> Tukar <b>semua formula kepada nilai</b> (fail tanpa formula — sesuai untuk hantar kepada orang lain)</label>
+      <div class="muted" style="margin-top:6px">${bad > 1 ? 'Formula yang merujuk sheet yang tidak dimasukkan akan ditukar kepada nilai supaya tidak jadi #REF!. ' : ''}Nama fail boleh diubah di kotak atas — "_" ditukar kepada ruang secara automatik.</div>` });
+  }
+  function logPanel() {
+    const L = [...M.log.values()], O = M.ops;
+    panel({ k: 'log', h: `<h4>📝 Perubahan (${L.length + O.length})</h4>${!L.length && !O.length ? '<p class="muted">Belum ada perubahan.</p>' : ''}
+      ${O.length ? `<div class="muted">Struktur:</div><ul style="margin:2px 0 8px 18px;padding:0">${O.map(o => `<li>${esc(M.wb.worksheets[o.si] ? M.wb.worksheets[o.si].name : '')} — ${esc(o.label)}</li>`).join('')}</ul>` : ''}
+      ${L.length ? `<table>${L.slice(0, 400).map(x => `<tr><td class="go" data-x="goto" data-si="${x.si}" data-r="${x.r}" data-c="${x.c}">${esc(M.wb.worksheets[x.si].name)}!${A(x.r, x.c)}</td><td class="muted">${esc(x.from || '(kosong)')}</td><td>→</td><td><b>${esc(shownOf(M.wb.worksheets[x.si], M.wb.worksheets[x.si].findCell(x.r, x.c)).t || '(kosong)')}</b></td></tr>`).join('')}</table>` : ''}` });
+  }
+  function findPanel() {
+    const p = panel({ k: 'find', h: `<h4>🔍 Cari &amp; ganti</h4><div class="xfind"><input class="in" id="xq" placeholder="Cari…" style="flex:1"><button class="btn sm" data-x="fnext">Cari seterusnya</button></div>
+      <div class="xfind" style="margin-top:6px"><input class="in" id="xrp" placeholder="Ganti dengan…" style="flex:1"><button class="btn sm" data-x="frep">Ganti semua (sheet ini)</button></div><div class="muted" id="xfm" style="margin-top:6px">Cari dalam nilai yang dipaparkan. Ganti hanya pada sel bukan formula.</div>` });
+    if (p) setTimeout(() => p.querySelector('#xq').focus(), 0);
+  }
+  function findNext() {
+    const q = M.el.querySelector('#xq').value.trim().toLowerCase(); if (!q) return; const ws = W(), R = lastR(ws), C = M.C;
+    let r = M.cur.r, c = M.cur.c + 1;
+    for (let n = 0; n < R * C + 1; n++) { if (c > C) { c = 1; r++; } if (r > R) { r = 1; } const cell = ws.findCell(r, c); if (cell && cell.value != null && shownOf(ws, cell).t.toLowerCase().includes(q)) { select(r, c); M.el.querySelector('#xfm').textContent = `Jumpa di ${A(r, c)}`; return; } c++; }
+    M.el.querySelector('#xfm').textContent = 'Tiada padanan.';
+  }
+  function replaceAll() {
+    const q = M.el.querySelector('#xq').value, rp = M.el.querySelector('#xrp').value; if (!q) return; const ws = W(), R = lastR(ws), cells = [], low = q.toLowerCase();
+    for (let r = 1; r <= R; r++) for (let c = 1; c <= M.C; c++) { const cell = ws.findCell(r, c); if (cell && typeof cell.value === 'string' && cell.value.toLowerCase().includes(low)) cells.push([r, c]); }
+    const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    change(cells, cell => { cell.value = cell.value.replace(rx, rp); }, 'Ganti');
+    M.el.querySelector('#xfm').textContent = `${cells.length} sel diganti.`;
+  }
+  function helpPanel() {
+    panel({ k: 'help', h: `<h4>❔ Cara guna (macam Excel)</h4><table>
+      <tr><td><b>Pilih</b></td><td>Klik sel · seret / Shift+klik untuk julat · klik huruf lajur / nombor baris untuk pilih seluruh lajur / baris</td></tr>
+      <tr><td><b>Edit</b></td><td>Terus taip, atau dwiklik / F2 untuk ubah isi. Enter = simpan &amp; turun, Tab = ke kanan, Esc = batal</td></tr>
+      <tr><td><b>Formula</b></td><td>Mula dengan <b>=</b> cth <code>=SUM(D5:D20)</code>, <code>=D5*1.06</code>, <code>=IF(E5&gt;0,"OK","SEMAK")</code>. Semasa menaip, klik / seret sel untuk masukkan rujukan — boleh juga klik tab sheet lain. Hasil dikira terus.</td></tr>
+      <tr><td><b>Baris / lajur</b></td><td>Klik kanan → sisip / padam. Formula lain dilaraskan automatik (macam Excel)</td></tr>
+      <tr><td><b>Pintasan</b></td><td>Ctrl+Z / Ctrl+Y undo/redo · Ctrl+C / X / V salin/potong/tampal (boleh tampal dari Excel) · Ctrl+D isi bawah · Ctrl+B tebal · Delete kosongkan · Ctrl+F cari · Ctrl+S simpan</td></tr>
+      <tr><td><b>Status bawah</b></td><td>Pilih beberapa sel untuk lihat Jumlah / Purata / Bilangan</td></tr>
+      <tr><td><b>Tanda</b></td><td><span style="box-shadow:inset 0 0 0 2px #f59e0b;padding:0 4px">oren</span> = sel yang anda ubah · segi tiga oren = formula yang guna nilai asal fail (fungsi belum disokong) · merah = ralat formula</td></tr>
+      <tr><td><b>Fungsi disokong</b></td><td class="muted">${XF.FN.join(', ')}</td></tr></table>` });
+  }
+
+  /* ---------- context menu ---------- */
+  function menuOff() { const m = document.querySelector('.xmenu'); if (m) m.remove(); }
+  function menu(x, y) {
+    menuOff(); const s = norm(M.sel), nr = s.r2 - s.r1 + 1, nc = s.c2 - s.c1 + 1, m = document.createElement('div'); m.className = 'xmenu';
+    m.innerHTML = `<button data-x="m-copy">📋 Salin (Ctrl+C)</button><button data-x="m-cut">✂ Potong (Ctrl+X)</button><button data-x="m-paste">📥 Tampal (Ctrl+V)</button><button data-x="m-pval">🔢 Tampal nilai sahaja</button><hr>
+      <button data-x="m-ra">⬆ Sisip ${nr} baris di atas</button><button data-x="m-rb">⬇ Sisip ${nr} baris di bawah</button><button data-x="m-rd">🗑 Padam baris ${s.r1}${nr > 1 ? '–' + s.r2 : ''}</button><hr>
+      <button data-x="m-ca">⬅ Sisip ${nc} lajur di kiri</button><button data-x="m-cb">➡ Sisip ${nc} lajur di kanan</button><button data-x="m-cd">🗑 Padam lajur ${XF.colS(s.c1)}${nc > 1 ? '–' + XF.colS(s.c2) : ''}</button><hr>
+      <button data-x="m-clr">⌫ Kosongkan isi</button><button data-x="m-val">🔢 Tukar formula → nilai</button>`;
+    document.body.appendChild(m); const w = m.offsetWidth, h = m.offsetHeight; m.style.left = Math.min(x, innerWidth - w - 8) + 'px'; m.style.top = Math.min(y, innerHeight - h - 8) + 'px';
+  }
+
+  /* ---------- save ---------- */
+  async function save() {
+    if (M.edit) endEdit(true);
+    const m = M, wb = m.wb, outName = m.opts.inZip ? m.name : fname((m.el.querySelector('#xname') || {}).value || m.name).replace(/(\.xlsx)?$/i, '.xlsx');
+    await busy('Mengira formula & menyimpan…', async () => {
+      XF.calcAll(wb);
+      const drop = wb.worksheets.filter((w, i) => m.skip.has(i));
+      if (drop.length && drop.length === wb.worksheets.length) { toast('Sekurang-kurangnya satu sheet mesti dimasukkan', 'warn'); return; }
+      if (drop.length || m.valuesOnly) {
+        const cx = new XF.Ctx(wb);
+        wb.worksheets.forEach(w => { if (drop.includes(w)) return; XF.eachFormula(w, cell => { if (m.valuesOnly || drop.some(d => XF.refsSheet(cell.formula, w.name, d.name))) { const v = XF.value(cx, w, cell.row, cell.col); cell.value = XF.isErr(v) ? null : v; } }); });
+        drop.forEach(w => wb.removeWorksheet(w.id));
+      }
+      wb.calcProperties = { fullCalcOnLoad: true };
+      const buf = await wb.xlsx.writeBuffer(); const n = m.log.size + m.ops.length; close();
+      m.onSave(new Blob([buf], { type: XLSX_MIME }), outName); toast(n ? `${n} perubahan disimpan → ${outName}` : `Disimpan → ${outName}`);
+    });
+  }
+
+  /* ---------- text / zip ---------- */
   function openText(name, text, onSave) {
     const el = modal(name, `<button class="btn pri" data-rv="tsave">💾 Simpan &amp; muat turun</button>`);
-    M.name = name; M.onSave = onSave; el.querySelector('.rvt').innerHTML = `<span class="muted">${text.split(/\r?\n/).length} baris</span>`;
+    M.name = name; M.onSave = onSave; el.querySelector('.rvt').innerHTML = `<span class="muted" style="padding:6px 14px;display:block">${text.split(/\r?\n/).length} baris</span>`;
     el.querySelector('.rvg').innerHTML = `<textarea spellcheck="false">${esc(text)}</textarea>`;
   }
   async function openZip(name, blob) {
     const z = await JSZip.loadAsync(blob), files = Object.keys(z.files).filter(n => !z.files[n].dir);
     const el = modal(name, `<button class="btn pri" data-rv="zsave">⬇ Muat turun ZIP</button>`);
     Object.assign(M, { zip: z, name, files });
-    el.querySelector('.rvt').innerHTML = `<span class="muted">${files.length} fail dalam ZIP — klik Semak untuk lihat / edit, kemudian Simpan untuk kembali ke senarai.</span>`;
-    el.querySelector('.rvg').innerHTML = `<table class="t rvl" style="background:#fff;min-width:60%">${files.map((f, i) => `<tr><td>${esc(f)}</td><td>${/\.(xlsx|txt)$/i.test(f) ? `<button class="btn sm" data-rv="zf" data-i="${i}">👁 Semak</button>` : ''}</td></tr>`).join('')}</table>`;
+    el.querySelector('.rvt').innerHTML = `<span class="muted" style="padding:6px 14px;display:block">${files.length} fail dalam ZIP — klik Semak untuk lihat / edit, kemudian Simpan untuk kembali ke senarai.</span>`;
+    el.querySelector('.rvg').innerHTML = `<table class="t rvl" style="background:#fff;min-width:60%;margin:10px">${files.map((f, i) => `<tr><td>${esc(f)}</td><td>${/\.(xlsx|txt)$/i.test(f) ? `<button class="btn sm" data-rv="zf" data-i="${i}">👁 Semak / edit</button>` : ''}</td></tr>`).join('')}</table>`;
   }
   async function openAny(name, blob) {
-    if (/\.xlsx$/i.test(name)) return openXlsx(name, blob, b => saveBlobRaw(name, b));
+    if (/\.xlsx$/i.test(name)) return openXlsx(name, blob, (b, n) => saveBlobRaw(n || name, b));
     if (/\.zip$/i.test(name)) return openZip(name, blob);
     if (/\.txt$/i.test(name)) return openText(name, await blob.text(), t => saveBlobRaw(name, new Blob([t], { type: 'text/plain' })));
     return saveBlobRaw(name, blob);
@@ -3621,31 +4504,145 @@ const RV = { on: true, recent: [] };
     openAny(name, blob).catch(e => { console.error(e); toast('Pratonton gagal — fail dimuat turun terus', 'warn'); saveBlobRaw(name, blob); });
     return true;
   };
+
+  /* ---------- events ---------- */
+  const inGrid = e => M && M.wb && M.el && M.el.contains(e.target);
+  const cellOf = t => { const td = t.closest && t.closest('.xg td'); return td && td.r ? td : null; };
+  document.addEventListener('mousedown', e => {
+    if (!e.target.closest('.xmenu')) menuOff();
+    if (!inGrid(e) || e.button === 2 && cellOf(e.target)) { if (M && M.wb && e.button === 2) { const td = cellOf(e.target); if (td) { const s = norm(M.sel); if (!(td.r >= s.r1 && td.r <= s.r2 && td.c >= s.c1 && td.c <= s.c2)) select(td.r, td.c); } } return; }
+    const td = cellOf(e.target), th = e.target.closest && e.target.closest('.xg th');
+    if (td) {
+      if (M.edit && canPoint()) { e.preventDefault(); M.drag = 'pt'; M.ptA = { r: td.r, c: td.c }; pointRef({ r1: td.r, c1: td.c, r2: td.r, c2: td.c }); return; }
+      if (M.edit) endEdit(true);
+      e.preventDefault(); if (e.shiftKey) select(td.r, td.c, true); else select(td.r, td.c); M.drag = 'sel'; focusSink(); return;
+    }
+    if (th) {
+      e.preventDefault(); if (M.edit && !canPoint()) endEdit(true);
+      const h = th.dataset.h, ws = W(), R = Math.max(lastR(ws), 1);
+      if (M.edit && canPoint()) { if (h === 'c') pointRef({ r1: 1, c1: +th.dataset.c, r2: R, c2: +th.dataset.c }); else if (h === 'r') pointRef({ r1: +th.dataset.r, c1: 1, r2: +th.dataset.r, c2: M.C }); return; }
+      if (h === 'c') { const c = +th.dataset.c; if (e.shiftKey) M.sel = { ...M.sel, r1: 1, r2: R, c2: c }; else { M.cur = { r: 1, c }; M.anchor = { r: 1, c }; M.sel = { r1: 1, c1: c, r2: R, c2: c }; } M.drag = 'col'; }
+      else if (h === 'r') { const r = +th.dataset.r; if (e.shiftKey) M.sel = { ...M.sel, c1: 1, c2: M.C, r2: r }; else { M.cur = { r, c: 1 }; M.anchor = { r, c: 1 }; M.sel = { r1: r, c1: 1, r2: r, c2: M.C }; } M.drag = 'row'; }
+      else if (h === 'all') M.sel = { r1: 1, c1: 1, r2: R, c2: M.C };
+      paint(); showCur(); status(); focusSink();
+    }
+  });
+  document.addEventListener('mouseover', e => {
+    if (!M || !M.drag || !M.wb) return; const td = cellOf(e.target), th = e.target.closest && e.target.closest('.xg th');
+    if (M.drag === 'pt' && td) { pointRef({ r1: M.ptA.r, c1: M.ptA.c, r2: td.r, c2: td.c }); return; }
+    if (M.drag === 'sel' && td) { M.sel = { r1: M.anchor.r, c1: M.anchor.c, r2: td.r, c2: td.c }; paint(); status(); }
+    if (M.drag === 'col' && th && th.dataset.h === 'c') { M.sel = { ...M.sel, c2: +th.dataset.c }; paint(); status(); }
+    if (M.drag === 'row' && th && th.dataset.h === 'r') { M.sel = { ...M.sel, r2: +th.dataset.r }; paint(); status(); }
+  });
+  document.addEventListener('mouseup', () => { if (M && M.drag) { if (M.drag === 'pt' && M.edit) { M.edit.inp.focus(); } else if (M.drag !== 'pt') { M.sel = norm(M.sel); showCur(); } M.drag = null; } });
+  document.addEventListener('dblclick', e => {
+    if (!inGrid(e)) return; const td = cellOf(e.target); if (td && !M.edit) { select(td.r, td.c); startEdit(); return; }
+    const tab = e.target.closest('[data-x="tab"]'); if (tab) { const w = M.wb.worksheets[+tab.dataset.i], n = prompt('Nama baru untuk sheet', w.name); if (!n || n === w.name) return; if (M.wb.worksheets.some(x => x !== w && x.name.toLowerCase() === n.toLowerCase())) { toast('Nama sheet sudah ada', 'warn'); return; } const old = w.name; M.wb.worksheets.forEach(x => XF.eachFormula(x, cell => { const f = XF.renameSheet(cell.formula, old, n); if (f !== cell.formula) cell.value = { formula: f, result: cell.value.result }; })); w.name = n; M.ops.push({ si: +tab.dataset.i, label: `Tukar nama sheet "${old}" → "${n}"` }); drawTabs(); status(); }
+  });
+  document.addEventListener('contextmenu', e => { if (!inGrid(e) || !e.target.closest('.xg')) return; e.preventDefault(); if (M.edit) endEdit(true); menu(e.clientX, e.clientY); });
+  document.addEventListener('scroll', e => { if (M && M.wb && e.target.id === 'xgrid') { const g = e.target; if (g.scrollTop + g.clientHeight > g.scrollHeight - 500 && M.drawn < M.R) more(CHUNK); } }, true);
+  document.addEventListener('copy', e => { if (M && M.wb && !M.edit && document.activeElement && document.activeElement.id === 'xsink') copy(e, false); });
+  document.addEventListener('cut', e => { if (M && M.wb && !M.edit && document.activeElement && document.activeElement.id === 'xsink') copy(e, true); });
+  document.addEventListener('paste', e => { if (M && M.wb && !M.edit && document.activeElement && document.activeElement.id === 'xsink') { e.preventDefault(); paste(e.clipboardData.getData('text/plain')); } });
+  document.addEventListener('input', e => {
+    if (!M || !M.wb) return;
+    if (e.target.id === 'xsink' && !M.edit) { const t = e.target.value; if (t && t !== ' ') startEdit(t); return; }   // typed text that arrived without a keydown (IME, phone keyboards)
+    if (M.edit && e.target === M.edit.inp) { M.pt = null; clearPt(); if (!M.edit.bar) { M.el.querySelector('#xfx').value = M.edit.inp.value; grow(); } hintFn(); }
+  });
+  document.addEventListener('focusin', e => { if (M && M.wb && e.target.id === 'xfx' && !M.edit) startEdit(null, true); });
+  document.addEventListener('keyup', e => { if (M && M.edit && e.target === M.edit.inp && /Arrow|Home|End/.test(e.key)) hintFn(); });
+  document.addEventListener('keydown', e => {
+    if (!M || !M.wb) return; const k = e.key, ctl = e.ctrlKey || e.metaKey, t = e.target;
+    if (t.id === 'xnb') { if (k === 'Enter') { e.preventDefault(); const v = t.value.trim().toUpperCase().replace(/\$/g, ''), m = /^([A-Z]{1,3})(\d+)(?::([A-Z]{1,3})(\d+))?$/.exec(v); if (m) { select(+m[2], XF.colN(m[1])); if (m[3]) { M.sel = { r1: +m[2], c1: XF.colN(m[1]), r2: +m[4], c2: XF.colN(m[3]) }; ensure(+m[4]); paint(); status(); } focusSink(); } else toast('Alamat tak sah — cth D25 atau A1:C9', 'warn'); } return; }
+    if (t.id === 'xq') { if (k === 'Enter') { e.preventDefault(); findNext(); } return; }
+    if (M.edit && t === M.edit.inp) {
+      if (k === 'Enter') { e.preventDefault(); endEdit(true, [e.shiftKey ? -1 : 1, 0]); }
+      else if (k === 'Tab') { e.preventDefault(); endEdit(true, [0, e.shiftKey ? -1 : 1]); }
+      else if (k === 'Escape') { e.preventDefault(); endEdit(false); }
+      return;
+    }
+    if (t.tagName === 'INPUT' || t.tagName === 'SELECT' || (t.tagName === 'TEXTAREA' && t.id !== 'xsink')) { if (k === 'Escape') { const p = M.el.querySelector('.xpan'); if (p) p.remove(); focusSink(); } return; }
+    if (k === 'Escape') { const p = M.el.querySelector('.xpan'); if (p) { p.remove(); return; } menuOff(); if (M.clip) { M.clip = null; } return; }
+    const { r, c } = M.cur, s = norm(M.sel), mv = (dr, dc) => { e.preventDefault(); if (e.shiftKey) { const er = (M.sel.r2) + dr, ec = (M.sel.c2) + dc; M.sel = { r1: M.anchor.r, c1: M.anchor.c, r2: Math.max(1, er), c2: Math.max(1, Math.min(ec, M.C)) }; ensure(M.sel.r2); paint(); status(); scrollTo(M.sel.r2, M.sel.c2); } else select(r + dr, c + dc); };
+    const jump = (dr, dc) => { const ws = W(), has = (rr, cc) => { const x = ws.findCell(rr, cc); return x && x.value != null && x.value !== ''; }; let rr = r, cc = c; const lim = (a, b) => a >= 1 && b >= 1 && b <= M.C && a <= Math.max(lastR(ws), 1); if (has(rr + dr, cc + dc) && has(rr, cc)) { while (lim(rr + dr, cc + dc) && has(rr + dr, cc + dc)) { rr += dr; cc += dc; } } else { rr += dr; cc += dc; while (lim(rr + dr, cc + dc) && !has(rr, cc)) { rr += dr; cc += dc; } } e.preventDefault(); select(Math.max(1, rr), Math.max(1, Math.min(cc, M.C))); };
+    if (ctl) {
+      const K = k.toLowerCase();
+      if (K === 'z') { e.preventDefault(); undoRedo(true); } else if (K === 'y') { e.preventDefault(); undoRedo(false); }
+      else if (K === 'b') { e.preventDefault(); act('bold'); } else if (K === 'i') { e.preventDefault(); act('ital'); }
+      else if (K === 'd') { e.preventDefault(); fill('d'); } else if (K === 'r') { e.preventDefault(); fill('r'); }
+      else if (K === 'f') { e.preventDefault(); findPanel(); } else if (K === 's') { e.preventDefault(); save(); }
+      else if (K === 'a') { e.preventDefault(); M.sel = { r1: 1, c1: 1, r2: Math.max(lastR(W()), 1), c2: M.C }; paint(); status(); }
+      else if (k === 'Home') { e.preventDefault(); select(1, 1); } else if (k === 'End') { e.preventDefault(); select(Math.max(lastR(W()), 1), Math.max(lastC(W()), 1)); }
+      else if (k === 'ArrowDown') jump(1, 0); else if (k === 'ArrowUp') jump(-1, 0); else if (k === 'ArrowRight') jump(0, 1); else if (k === 'ArrowLeft') jump(0, -1);
+      return;
+    }
+    if (k === 'ArrowDown') mv(1, 0); else if (k === 'ArrowUp') mv(-1, 0); else if (k === 'ArrowRight') mv(0, 1); else if (k === 'ArrowLeft') mv(0, -1);
+    else if (k === 'Enter') { e.preventDefault(); select(r + (e.shiftKey ? -1 : 1), c); } else if (k === 'Tab') { e.preventDefault(); select(r, c + (e.shiftKey ? -1 : 1)); }
+    else if (k === 'PageDown') { e.preventDefault(); select(r + 25, c); } else if (k === 'PageUp') { e.preventDefault(); select(Math.max(1, r - 25), c); }
+    else if (k === 'Home') { e.preventDefault(); select(r, 1); }
+    else if (k === 'F2') { e.preventDefault(); startEdit(); }
+    else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); clearSel(); }
+    else if (k.length === 1 && !e.altKey) { e.preventDefault(); startEdit(k); }
+  });
+  function act(a, b) {
+    const ws = W();
+    if (a === 'bold' || a === 'ital') { const key = a === 'bold' ? 'bold' : 'italic', cur = ws.findCell(M.cur.r, M.cur.c), on = !(cur && cur.font && cur.font[key]); change(selCells(), cell => restyle(cell, 'font', { ...(cell.font || {}), [key]: on }), on ? 'Tebal' : 'Buang tebal'); }
+    else if (a === 'al') change(selCells(), cell => restyle(cell, 'alignment', { ...(cell.alignment || {}), horizontal: b }), 'Jajaran');
+    else if (a === 'border') { const t = { style: 'thin', color: { argb: 'FF000000' } }; change(selCells(), cell => restyle(cell, 'border', { top: t, left: t, bottom: t, right: t }), 'Garisan'); }
+    else if (a === 'noborder') change(selCells(), cell => restyle(cell, 'border', undefined), 'Buang garisan');
+  }
+  document.addEventListener('change', e => {
+    if (!M || !M.wb || !M.el.contains(e.target)) return; const x = e.target.dataset.x, v = e.target.value;
+    if (x === 'fill' && v !== '-') { change(selCells(), cell => restyle(cell, 'fill', v ? { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + v } } : undefined), 'Warna sel'); e.target.value = '-'; focusSink(); }
+    else if (x === 'font' && v !== '-') { change(selCells(), cell => restyle(cell, 'font', { ...(cell.font || {}), color: { argb: 'FF' + v } }), 'Warna tulisan'); e.target.value = '-'; focusSink(); }
+    else if (x === 'numf' && v !== '-') { change(selCells(), cell => restyle(cell, 'numFmt', v), 'Format nombor'); e.target.value = '-'; focusSink(); }
+    else if (x === 'fnp' && v) { e.target.value = ''; if (M.edit) { const i = M.edit.inp, p = i.selectionStart; i.value = i.value.slice(0, p) + v + '(' + i.value.slice(p); i.focus(); i.setSelectionRange(p + v.length + 1, p + v.length + 1); if (!M.edit.bar) M.el.querySelector('#xfx').value = i.value; grow(); hintFn(); } else startEdit('=' + v + '('); }
+    else if (x === 'inc') { const i = +e.target.dataset.i; if (e.target.checked) M.skip.delete(i); else M.skip.add(i); drawTabs(); }
+    else if (x === 'vo') M.valuesOnly = e.target.checked;
+  });
   document.addEventListener('click', async e => {
-    const b = e.target.closest('[data-rv]'); if (!b) return; const a = b.dataset.rv;
+    if (M && M.wb && e.target.closest) {
+      const b = e.target.closest('[data-x]'); if (!b || !(M.el.contains(b) || b.closest('.xmenu'))) return; const a = b.dataset.x;
+      if (b.tagName === 'SELECT' || b.tagName === 'INPUT') return;
+      if (a !== 'tab' && M.edit && !b.closest('.xmenu')) { if (a === 'pclose') { } else endEdit(true); }
+      menuOff();
+      if (a === 'close') { if ((M.log.size || M.ops.length) && !confirm(`Ada ${M.log.size + M.ops.length} perubahan belum disimpan. Tutup tanpa simpan?`)) return; close(); }
+      else if (a === 'orig') { const m = M; close(); m.onSave(m.blob, m.opts.inZip ? m.name : fname(m.name)); }
+      else if (a === 'save') save();
+      else if (a === 'tab') switchSheet(+b.dataset.i);
+      else if (a === 'undo') undoRedo(true); else if (a === 'redo') undoRedo(false);
+      else if (a === 'bold' || a === 'ital' || a === 'al' || a === 'border' || a === 'noborder') act(a, b.dataset.v);
+      else if (a === 'dec+') decimals(1); else if (a === 'dec-') decimals(-1);
+      else if (a === 'merge') mergeToggle();
+      else if (a === 'sum') autoSum(); else if (a === 'filld') fill('d');
+      else if (a === 'rowa') rowsOp('ins'); else if (a === 'rowd') rowsOp('del'); else if (a === 'cola') colsOp('ins'); else if (a === 'cold') colsOp('del');
+      else if (a === 'find') findPanel(); else if (a === 'fnext') findNext(); else if (a === 'frep') replaceAll();
+      else if (a === 'vals') toValues(); else if (a === 'help') helpPanel(); else if (a === 'opt') optPanel(); else if (a === 'log') logPanel();
+      else if (a === 'pclose') { const p = M.el.querySelector('.xpan'); if (p) p.remove(); }
+      else if (a === 'goto') { const si = +b.dataset.si; if (si !== M.si) switchSheet(si); select(+b.dataset.r, +b.dataset.c); }
+      else if (a === 'm-copy') copy(null, false); else if (a === 'm-cut') copy(null, true);
+      else if (a === 'm-paste') { if (M.clip) paste(null); else if (navigator.clipboard && navigator.clipboard.readText) navigator.clipboard.readText().then(t => paste(t), () => toast('Guna Ctrl+V untuk tampal', 'warn')); }
+      else if (a === 'm-pval') { if (M.clip) paste(null, true); else toast('Salin (Ctrl+C) dulu dari jadual ini', 'warn'); }
+      else if (a === 'm-ra') rowsOp('ins'); else if (a === 'm-rb') rowsOp('insb'); else if (a === 'm-rd') rowsOp('del');
+      else if (a === 'm-ca') colsOp('ins'); else if (a === 'm-cb') colsOp('insr'); else if (a === 'm-cd') colsOp('del');
+      else if (a === 'm-clr') clearSel(); else if (a === 'm-val') toValues();
+      if (M && !M.edit && !['find', 'fnext', 'frep', 'opt', 'log', 'help'].includes(a) && !b.closest('.xpan')) focusSink();
+      return;
+    }
+    const b = e.target.closest && e.target.closest('[data-rv]'); if (!b) return; const a = b.dataset.rv;
     if (a === 'x') close();
-    else if (a === 'sh') { M.sheet = +b.dataset.i; M.limit = 400; M.el.querySelectorAll('.rvt button').forEach(x => x.classList.toggle('on', x === b)); drawSheet(); }
-    else if (a === 'more') { M.limit += 1000; drawSheet(); }
-    else if (a === 'orig') { const m = M; close(); m.onSave(m.blob); }
-    else if (a === 'save') { const m = M; m.wb.calcProperties = { fullCalcOnLoad: true }; const buf = await m.wb.xlsx.writeBuffer(); close(); m.onSave(new Blob([buf], { type: XLSX_MIME })); toast(m.edits ? `${m.edits} sel diubah & disimpan` : 'Disimpan'); }
     else if (a === 'tsave') { const m = M, t = m.el.querySelector('textarea').value; close(); m.onSave(t); }
     else if (a === 'zf') { const z = M.zip, zname = M.name, f = M.files[+b.dataset.i]; const reopen = async () => { const blob = await z.generateAsync({ type: 'blob' }); openZip(zname, blob); };
-      if (/\.xlsx$/i.test(f)) openXlsx(f, await z.file(f).async('blob'), async nb => { z.file(f, nb); await reopen(); });
+      if (/\.xlsx$/i.test(f)) openXlsx(f, await z.file(f).async('blob'), async nb => { z.file(f, nb); await reopen(); }, { inZip: true });
       else openText(f, await z.file(f).async('string'), async t => { z.file(f, t); await reopen(); }); }
     else if (a === 'zsave') { const m = M, out = await m.zip.generateAsync({ type: 'blob' }); close(); saveBlobRaw(m.name, out); }
     else if (a === 'pill') { RV.on = !RV.on; try { localStorage.setItem('rvOn', RV.on ? '1' : '0'); } catch (x) { } pill(); }
     else if (a === 'rec') { const r = RV.recent[+b.dataset.i]; if (r) openAny(r.name, r.blob); }
-    else if (a === 'recl') { const el = modal('Output terkini', ''); el.querySelector('.rvg').innerHTML = RV.recent.length ? `<table class="t rvl" style="background:#fff">${RV.recent.map((r, i) => `<tr><td>${esc(r.name)}</td><td class="muted">${r.at.toLocaleTimeString()}</td><td>${(r.blob.size / 1024).toFixed(0)} KB</td><td><button class="btn sm" data-rv="rec" data-i="${i}">👁 Semak / muat turun</button></td></tr>`).join('')}</table>` : '<p>Tiada output lagi.</p>'; }
-  });
-  // every keystroke in a cell is applied to the workbook straight away (no reliance on blur)
-  document.addEventListener('input', e => {
-    const td = e.target; if (!M || !M.wb || !td.matches || !td.matches('.rvg td[data-r]')) return;
-    const ws = M.wb.worksheets[M.sheet], cell = ws.getCell(+td.dataset.r, +td.dataset.c);
-    cell.value = parse(td.textContent); if (!td.classList.contains('ed')) { td.classList.add('ed'); M.edits++; } const x = M.el.querySelector('#rv-ed'); if (x) x.textContent = M.edits + ' sel diubah';
+    else if (a === 'recl') { const el = modal('Output terkini', ''); el.querySelector('.rvg').innerHTML = RV.recent.length ? `<table class="t rvl" style="background:#fff;margin:10px">${RV.recent.map((r, i) => `<tr><td>${esc(r.name)}</td><td class="muted">${r.at.toLocaleTimeString()}</td><td>${(r.blob.size / 1024).toFixed(0)} KB</td><td><button class="btn sm" data-rv="rec" data-i="${i}">👁 Semak / muat turun</button></td></tr>`).join('')}</table>` : '<p style="padding:14px">Tiada output lagi.</p>'; }
   });
   function pill() {
     let p = document.getElementById('rvpill'); if (!p) { p = document.createElement('div'); p.id = 'rvpill'; p.className = 'rvpill'; document.body.appendChild(p); }
-    p.innerHTML = `<span data-rv="pill">👁 Semak sebelum muat turun: <b>${RV.on ? 'ON' : 'OFF'}</b></span>${RV.recent.length ? ` · <span data-rv="recl">📂 Output terkini (${RV.recent.length})</span>` : ''}`;
+    p.innerHTML = `<span data-rv="pill" title="Klik untuk hidup / matikan">👁 Semak &amp; edit sebelum muat turun: <b>${RV.on ? 'ON' : 'OFF'}</b></span>${RV.recent.length ? ` · <span data-rv="recl">📂 Output terkini (${RV.recent.length})</span>` : ''}`;
   }
   try { RV.on = localStorage.getItem('rvOn') !== '0'; } catch (x) { }
   EXT.load.push(async () => pill());
