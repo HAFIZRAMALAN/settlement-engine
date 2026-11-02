@@ -449,10 +449,24 @@ async function ingestReport(file, tables, text, chip) {
   if (type === 'invoice') parsed = parseInvoice(tables, text);
   if (parsed.error) { chip.note = parsed.error; chip.warn = true; return chip; }
   parsed.file = file.name;
+  // the web system will not export a range across months: a second Daily Settlement for other dates is joined to the first (same dates → newer file wins)
+  const old = type === 'settle' && S.A[term].settle;
+  if (old && old.rows && !(dKey(old.dateFrom) === dKey(parsed.dateFrom) && dKey(old.dateTo) === dKey(parsed.dateTo))) {
+    const days = new Set(parsed.rows.map(r => dKey(r.date))), keep = old.rows.filter(r => !days.has(dKey(r.date)));
+    if (keep.length) {
+      const rows = keep.concat(parsed.rows).sort((a, b) => dKey(a.date) - dKey(b.date)); rows.forEach((r, i) => { r.no = i + 1 + '.'; });
+      const from = [old.dateFrom, parsed.dateFrom].sort((a, b) => dKey(a) - dKey(b))[0], to = [old.dateTo, parsed.dateTo].sort((a, b) => dKey(b) - dKey(a))[0];
+      const have = new Set(rows.map(r => dKey(r.date))), gap = [];
+      for (let d = new Date(Date.UTC(from.y, from.m - 1, from.d)); dKey(fromJsDate(d)) <= dKey(to); d.setUTCDate(d.getUTCDate() + 1)) if (!have.has(dKey(fromJsDate(d)))) gap.push(dmyStr(fromJsDate(d)));
+      const names = [...new Set([...(old.extraNames || []), ...(parsed.extraNames || [])])];
+      parsed = { ...parsed, rows, dateFrom: from, dateTo: to, dateKey: rangeText(from, to), extraNames: names, file: `${old.file} + ${file.name}`, merged: (old.merged || [old.file]).concat(file.name),
+        mergeNote: `Digabung dengan ${old.file} → ${rangeText(from, to)}`, warnings: [...(parsed.warnings || []), ...(gap.length ? [`Tarikh tiada dalam mana-mana report: ${gap.join(', ')}`] : [])] };
+    }
+  }
   S.A[term][type] = parsed;
   S.A[term].ov = null;
   chip.ok = true; chip.date = parsed.dateFrom ? rangeText(parsed.dateFrom, parsed.dateTo) : '';
-  chip.note = (parsed.warnings || []).join(' · ');
+  chip.note = [parsed.mergeNote, ...(parsed.warnings || [])].filter(Boolean).join(' · ');
   chip.warn = !!(parsed.warnings && parsed.warnings.length);
   return chip;
 }
