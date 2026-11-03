@@ -3471,7 +3471,10 @@ async function msBuild() {
 }
 async function msQuick(blank) {
   const P = MS.projects.find(p => p.id === MS.sel) || { name: 'MERCHANT' }, seen = new Set(), tx = [];
-  (blank ? [] : MS.csv).slice().sort((a, b) => a.rep - b.rep).forEach(x => x.rows.forEach(r => { const k = r.kind + msKey(r.card, r.amtC, r.date, r.auth, r.term); if (!r.date || seen.has(k)) return; seen.add(k); tx.push(r); }));
+  const base = blank ? null : (MS.data[MS.sel] || {}).base, have = new Map(), bk = r => `${r.kind}|${r.date}|${r.amtC}`;
+  if (base) base.rows.forEach(r => { tx.push(r); have.set(bk(r), (have.get(bk(r)) || 0) + 1); });
+  let added = 0;
+  (blank ? [] : MS.csv).slice().sort((a, b) => a.rep - b.rep).forEach(x => x.rows.forEach(r => { const k = r.kind + msKey(r.card, r.amtC, r.date, r.auth, r.term); if (!r.date || seen.has(k)) return; seen.add(k); const n = have.get(bk(r)); if (n) { have.set(bk(r), n - 1); return; } tx.push(r); added++; }));
   tx.sort((a, b) => a.date - b.date || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) || a.amtC - b.amtC);
   const days = [...new Set(tx.map(r => r.date))], hasX = tx.some(r => r.kind === 'X'), K = hasX ? ['C', 'D', 'X'] : ['C', 'D'];
   const wb = new ExcelJS.Workbook(); wb.calcProperties = { fullCalcOnLoad: true };
@@ -3501,7 +3504,8 @@ async function msQuick(blank) {
   const tt = blank ? last + 1 : tx.length + 4; wt.getCell(tt, 1).value = 'JUMLAH'; wt.getCell(tt, 2).value = { formula: `SUM(B4:B${tt - 1})`, result: tx.reduce((a, x) => a + x.amtC, 0) / 100 }; wt.getCell(tt, 2).numFmt = MON; [1, 2].forEach(c => { wt.getCell(tt, c).font = { bold: true }; });
   const dd = t => msD(t).slice(0, 5).replace('/', '.');
   if (blank) return { name: `${P.name} MERCHANT STATEMENT TEMPLATE KOSONG.xlsx`, blob: new Blob([await wb.xlsx.writeBuffer()], { type: XLSX_MIME }) };
-  return { name: `${P.name} MERCHANT STATEMENT ${from ? dd(from) + (to !== from ? ' - ' + dd(to) : '') : ''}.xlsx`, blob: new Blob([await wb.xlsx.writeBuffer()], { type: XLSX_MIME }), n: tx.length, days: days.length };
+  const keep = base && !/TEMPLATE/i.test(base.name) ? base.name.replace(/\.xls[xm]?$/i, '') + '.xlsx' : null;
+  return { name: keep || `${P.name} MERCHANT STATEMENT ${from ? dd(from) + (to !== from ? ' - ' + dd(to) : '') : ''}.xlsx`, blob: new Blob([await wb.xlsx.writeBuffer()], { type: XLSX_MIME }), n: tx.length, days: days.length, added };
 }
 const msGuessType = t => /FOREIGN|AMEX|JCB/i.test(t) ? 'FOREIGN' : 'LOCAL';
 const msOutName = () => MS.wb.name.replace(/\.xls[xm]?$/i, '') + '.xlsx';
@@ -3516,6 +3520,19 @@ async function msTemplate() {
   return { name: name + '.xlsx', blob: new Blob([await wb.xlsx.writeBuffer()], { type: XLSX_MIME }) };
 }
 
+EXT.ingest.push(async (file, wb, names, chip) => {   // the date & amount Excel this module makes (also its blank template) = that project's month file
+  if (!(names.includes('RINGKASAN') && names.includes('TRANSAKSI'))) return null;
+  const P = msByFile(file.name); if (P) MS.sel = P.id;
+  const wt = wb.getWorksheet('TRANSAKSI'), rows = [], KD = { CREDIT: 'C', DEBIT: 'D', AMEX: 'X' };
+  for (let r = 4, L = msLast(wt); r <= L; r++) {
+    const a = wt.getCell(r, 1).value, t = msTs(a instanceof Date ? a : typeof a === 'number' ? a : msTxt(a).trim()), v = wt.getCell(r, 2).value, amt = typeof v === 'number' ? v : parseFloat(msTxt(v).replace(/,/g, ''));
+    if (!t || isNaN(amt)) continue;
+    rows.push({ date: t, amtC: Math.round(amt * 100), kind: KD[msTxt(wt.getCell(r, 3).value).trim().toUpperCase()] || 'C' });
+  }
+  (MS.data[MS.sel] || (MS.data[MS.sel] = { wb: null, info: null, csv: [] })).base = { name: file.name, rows };
+  Object.assign(chip, { kind: 'Merchant Excel (tarikh & amaun)', ok: true, module: 'M', note: `${(MS.projects.find(p => p.id === MS.sel) || {}).name || ''} · ${rows.length} transaksi sedia ada · RM${fmtC(rows.reduce((a, r) => a + r.amtC, 0))}` });
+  return chip;
+});
 EXT.ingest.push(async (file, wb, names, chip) => {
   if (!(names.includes('CardType') && names.includes('TID MID COHERENT') && names.includes('MIX'))) return null;
   const P = msByFile(file.name); if (P) MS.sel = P.id;
@@ -3555,7 +3572,8 @@ function msProjBar() {
 }
 EXT.render.M = function renderM() {
   const bar = msProjBar();
-  if (!MS.wb && !MS.csv.length) { panel().innerHTML = bar + empty('Seret fail Merchant e-statement ke sini', 'Fail <b>Merchant statement tool</b> bulan semasa (.xlsx) + semua CSV bank <b>DVS04A</b> (credit) dan <b>DVS04E</b> (debit) untuk minggu itu. Engine masukkan ikut minggu, susun ikut tarikh → Card Type → Terminal, highlight warna minggu baru, transaksi lewat di atas blok, dan semak jumlah setiap CSV.') + (msSimple() ? `<div class="actions"><button class="btn" data-act="msblank">⬇ Template kosong Excel</button></div>` : ''); return; }
+  const base = (MS.data[MS.sel] || {}).base;
+  if (!MS.wb && !MS.csv.length && !base) { panel().innerHTML = bar + empty('Seret fail Merchant e-statement ke sini', 'Fail <b>Merchant statement tool</b> bulan semasa (.xlsx) + semua CSV bank <b>DVS04A</b> (credit) dan <b>DVS04E</b> (debit) untuk minggu itu. Engine masukkan ikut minggu, susun ikut tarikh → Card Type → Terminal, highlight warna minggu baru, transaksi lewat di atas blok, dan semak jumlah setiap CSV.') + (msSimple() ? `<div class="actions"><button class="btn" data-act="msblank">⬇ Template kosong Excel</button></div>` : ''); return; }
   const I = MS.info, PL = msPlan(), money = c => 'RM' + fmtC(c), sum = a => a.reduce((x, r) => x + r.amtC, 0);
   let h = bar + `<section class="card"><h3>${esc((MS.projects.find(p => p.id === MS.sel) || {}).name || 'Merchant')} <span class="pill">${MS.wb ? esc(MS.wb.name) : 'fail bulan belum diseret'}</span></h3>`;
   if (!MS.wb) h += msSimple() || MS.csv.length ? `<p class="hint">Fokus <b>tarikh &amp; amaun</b> sahaja (TID tidak diperlukan). Klik <b>Excel baru</b> di bawah — fail bulan tidak wajib; kalau mahu sambung ke fail bulan, seret juga fail <b>Merchant statement tool</b>.</p>` : `<p class="hint bad">Seret juga fail <b>Merchant statement tool</b> bulan ini (.xlsx) — data minggu ini akan disambung ke dalamnya.</p>`;
@@ -3574,7 +3592,8 @@ EXT.render.M = function renderM() {
   }
   const cs = MS.csv.slice().sort((a, b) => (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) || a.rep - b.rep);
   h += `<section class="card"><h3>Semakan CSV <span class="pill">${cs.length} fail</span></h3><div class="scroll"><table class="t dense"><tr><th>Fail</th><th>Jenis</th><th>Report</th><th class="r">Transaksi</th><th class="r">Jumlah baris</th><th class="r">Total Debit Amount (CSV)</th><th></th></tr>${cs.map(x => { const s = sum(x.rows), ok = (x.totC == null || x.totC === s) && (!x.items || x.items === x.rows.length); return `<tr><td>${esc(x.name)}</td><td>${x.kind === 'C' ? 'credit' : 'debit'}</td><td>${x.rep ? msD(x.rep) : '?'}</td><td class="r">${x.rows.length}</td><td class="r">${fmtC(s)}</td><td class="r">${x.totC == null ? '-' : fmtC(x.totC)}</td><td>${ok ? '<span class="tag ok">padan</span>' : '<span class="tag bad">tak padan</span>'}</td></tr>`; }).join('')}</table></div>
-  <div class="actions">${MS.csv.length ? `<button class="btn ok" data-act="msquick">⬇ Excel baru (tarikh &amp; amaun)</button>` : ''}${MS.wb && PL.weeks.some(w => w.C.length || w.D.length || w.X.length) ? `<button class="btn pri" data-act="msdl">⬇ ${esc(fname(msOutName()))}</button>` : ''}${!MS.wb ? `<button class="btn" data-act="msblank">⬇ Template kosong Excel</button>` : ''}${MS.wb ? `<button class="btn" data-act="mstpl">⬇ Template kosong bulan depan</button>` : ''}<span class="sp"></span><button class="btn sm" data-act="msclr">Kosongkan projek ini</button></div></section>`;
+  ${base ? `<p class="hint">Excel sedia ada: <b>${esc(base.name)}</b> · ${base.rows.length} transaksi · RM${fmtC(base.rows.reduce((a, r) => a + r.amtC, 0))} — CSV baru disambung ke dalamnya (yang sudah ada dilangkau).</p>` : ''}
+  <div class="actions">${MS.csv.length || base ? `<button class="btn ok" data-act="msquick">⬇ ${base ? 'Kemaskini Excel' : 'Excel baru'} (tarikh &amp; amaun)</button>` : ''}${MS.wb && PL.weeks.some(w => w.C.length || w.D.length || w.X.length) ? `<button class="btn pri" data-act="msdl">⬇ ${esc(fname(msOutName()))}</button>` : ''}${!MS.wb ? `<button class="btn" data-act="msblank">⬇ Template kosong Excel</button>` : ''}${MS.wb ? `<button class="btn" data-act="mstpl">⬇ Template kosong bulan depan</button>` : ''}<span class="sp"></span><button class="btn sm" data-act="msclr">Kosongkan projek ini</button></div></section>`;
   panel().innerHTML = h;
 };
 
@@ -3585,12 +3604,12 @@ document.addEventListener('click', async e => {
     if (miss.length && !confirm(`${miss.length} TID baru belum ada nama operator (${miss.map(x => x[0]).join(', ')}) — lajur Company akan kosong untuk transaksi itu. Teruskan?`)) return;
     await busy('Menyambung minggu ke fail bulan…', async () => { const { blob, res } = await msBuild(); saveBlob(msOutName(), blob); toast(res.map(o => `${o.label}: ${MS_SHEETS.map(s => o[s] ? `${s} +${o[s].added}` : '').filter(Boolean).join(' · ')}`).join(' | ')); });
   }
-  else if (a === 'msquick') await busy('Menyediakan Excel baru…', async () => { const q = await msQuick(); saveBlob(q.name, q.blob); toast(`${q.n} transaksi · ${q.days} hari`); });
+  else if (a === 'msquick') await busy('Menyediakan Excel baru…', async () => { const q = await msQuick(); saveBlob(q.name, q.blob); toast(`${q.n} transaksi · ${q.days} hari${q.added != null ? ` · +${q.added} baru` : ''}`); });
   else if (a === 'msblank') { const q = await msQuick(true); saveBlob(q.name, q.blob); }
   else if (a === 'mstpl') await busy('Menyediakan template…', async () => { const t = await msTemplate(); saveBlob(t.name, t.blob); });
   else if (a === 'msall') { const v = clean(($('#msAll') || {}).value || ''); if (!v) return; msPlan().newT.forEach(([t]) => { if (!clean(MS.names[t] || '')) MS.names[t] = v; }); await DB.set('msNames', MS.names); renderAll(); }
   else if (a === 'mssel') { MS.sel = b.dataset.v; renderAll(); }
-  else if (a === 'msclr') { const gone = new Set([...(MS.csv || []).map(x => x.name), MS.wb && MS.wb.name]); MS.data[MS.sel] = { wb: null, info: null, csv: [] }; S.files = (S.files || []).filter(c => !(c.module === 'M' && gone.has(c.name))); renderAll(); }
+  else if (a === 'msclr') { const gone = new Set([...(MS.csv || []).map(x => x.name), MS.wb && MS.wb.name, (MS.data[MS.sel] || {}).base && MS.data[MS.sel].base.name]); MS.data[MS.sel] = { wb: null, info: null, csv: [] }; S.files = (S.files || []).filter(c => !(c.module === 'M' && gone.has(c.name))); renderAll(); }
 });
 document.addEventListener('submit', async e => {
   if (e.target.dataset.act !== 'msadd') return; e.preventDefault();
