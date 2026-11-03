@@ -3248,7 +3248,7 @@ const MS_SEED = [
   { id: 'SBST', name: 'SBST', mers: ['027031838113'], kw: ['SBST'] },
   { id: 'MYBUS', name: 'CASHLESS MYBUS', mers: ['027031779283'], kw: ['CASHLESS', 'MYBUS'] },
   { id: 'TBS', name: 'TBS', mers: ['027032122905', '027015533706'], kw: ['TBS'] },
-  { id: 'MS', name: 'MS', mers: ['027003525904'], kw: ['MS'] },
+  { id: 'MS', name: 'MS', mers: ['027003525904', '027013385612'], kw: ['MS'] },
   { id: 'KT', name: 'KT', mers: ['027004268694'], kw: ['KT'] },
 ];
 const msSaveProj = () => DB.set('msProjects', MS.projects);
@@ -3502,6 +3502,23 @@ async function msQuick(blank) {
   wt.columns = [{ width: 13 }, { width: 16 }, { width: 10 }];
   tx.forEach((x, i) => { const r = wt.getRow(4 + i); r.getCell(1).value = new Date(x.date); r.getCell(1).numFmt = 'dd/mm/yyyy'; r.getCell(2).value = x.amtC / 100; r.getCell(2).numFmt = MON; r.getCell(3).value = { C: 'credit', D: 'debit', X: 'AMEX' }[x.kind]; });
   const tt = blank ? last + 1 : tx.length + 4; wt.getCell(tt, 1).value = 'JUMLAH'; wt.getCell(tt, 2).value = { formula: `SUM(B4:B${tt - 1})`, result: tx.reduce((a, x) => a + x.amtC, 0) / 100 }; wt.getCell(tt, 2).numFmt = MON; [1, 2].forEach(c => { wt.getCell(tt, c).font = { bold: true }; });
+  const mth = blank ? null : (MS.data[MS.sel] || {}).mth;
+  if (mth && Object.keys(mth).length) {
+    const ck = wb.addWorksheet('SEMAKAN BANK', { views: [{ state: 'frozen', ySplit: 3 }] }), csvD = new Map(), bkD = new Map();
+    MS.csv.forEach(x => csvD.set(x.rep, (csvD.get(x.rep) || 0) + x.rows.reduce((a, r) => a + r.amtC, 0)));
+    Object.values(mth).forEach(m => m.days.forEach(([d, c]) => bkD.set(d, (bkD.get(d) || 0) + c)));
+    ck.getCell('A1').value = `${P.name} - semakan CSV vs bank (Monthly Total Sales Summary)`; ck.getCell('A1').font = { bold: true, size: 13 };
+    ['Tarikh laporan', 'CSV (RM)', 'Bank MTH (RM)', 'Beza (RM)'].forEach((h, i) => Object.assign(ck.getCell(3, i + 1), { value: h, style: { ...head, border: bd } }));
+    ck.getRow(3).height = 30; ck.columns = [{ width: 15 }, { width: 16 }, { width: 16 }, { width: 14 }];
+    const ds = [...new Set([...csvD.keys(), ...bkD.keys()])].sort((a, b) => a - b);
+    ds.forEach((d, i) => { const r = 4 + i, set = (c, v, f) => { const x = ck.getCell(r, c); x.value = v; x.numFmt = f; x.border = bd; };
+      set(1, new Date(d), 'dd/mm/yyyy'); set(2, (csvD.get(d) || 0) / 100, MON); set(3, (bkD.get(d) || 0) / 100, MON);
+      set(4, { formula: `ROUND(B${r}-C${r},2)`, result: ((csvD.get(d) || 0) - (bkD.get(d) || 0)) / 100 }, MON);
+      if ((csvD.get(d) || 0) !== (bkD.get(d) || 0)) ck.getCell(r, 4).fill = msFill('FFFFC7CE'); });
+    const r = 4 + ds.length; ck.getCell(r, 1).value = 'JUMLAH';
+    [2, 3, 4].forEach(c => { ck.getCell(r, c).value = { formula: `SUM(${L(c)}4:${L(c)}${r - 1})` }; ck.getCell(r, c).numFmt = MON; });
+    for (let c = 1; c <= 4; c++) Object.assign(ck.getCell(r, c), { font: { bold: true }, fill: msFill('FFDDEBF7'), border: { ...bd, top: { style: 'double' } } });
+  }
   const dd = t => msD(t).slice(0, 5).replace('/', '.');
   if (blank) return { name: `${P.name} MERCHANT STATEMENT TEMPLATE KOSONG.xlsx`, blob: new Blob([await wb.xlsx.writeBuffer()], { type: XLSX_MIME }) };
   const keep = base && !/TEMPLATE/i.test(base.name) ? base.name.replace(/\.xls[xm]?$/i, '') + '.xlsx' : null;
@@ -3510,6 +3527,24 @@ async function msQuick(blank) {
 const msGuessType = t => /FOREIGN|AMEX|JCB/i.test(t) ? 'FOREIGN' : 'LOCAL';
 const msOutName = () => MS.wb.name.replace(/\.xls[xm]?$/i, '') + '.xlsx';
 
+// MS / KT (no month file of their own): same Merchant statement tool format as the one dropped (e.g. TBS), emptied, filled with this project's CSVs
+async function msFull() {
+  const P = MS.projects.find(p => p.id === MS.sel) || { name: 'MERCHANT', id: '' }, keep = [MS.wb, MS.info];
+  let buf = MS.fmt.buf; const w0 = await loadXlsx(buf), I0 = msInspect(w0, MS.fmt.name);
+  MS.info = I0; const PL = msPlan(); MS.info = keep[1];   // plan as the format file sees it (monthly banner)
+  if (I0.data) { for (const sn of MS_SHEETS) { const ws = w0.getWorksheet(sn); if (!ws) continue; for (let r = msLast(ws); r >= 2; r--) { const row = ws.getRow(r); for (let c = 1; c <= Math.max(MS_N, ws.columnCount); c++) { const cell = row.getCell(c); cell.value = null; cell.style = {}; } row.height = undefined; } } }
+  const lb = PL.weeks[0] && PL.weeks[0].label;   // empty sheets (no debit / AMEX this month) still get the month banner
+  if (lb) MS_SHEETS.forEach(sn => { const ws = w0.getWorksheet(sn), x = ws && ws.getCell(2, 1); if (x && (I0.data || /^NAMA BULAN/i.test(msTxt(x.value).trim()))) x.value = lb; });
+  buf = await w0.xlsx.writeBuffer();
+  let name = MS.fmt.name.replace(/\.xls[xm]?$/i, ''); const n0 = name;
+  MS.projects.filter(q => q.id !== P.id).forEach(q => q.kw.forEach(k => { name = name.replace(new RegExp(`(^|[^A-Z0-9])${k}(?=[^A-Z0-9]|$)`, 'i'), `$1${P.name}`); }));
+  if (name === n0 && !new RegExp(`(^|[^A-Z0-9])${P.name}(?=[^A-Z0-9]|$)`, 'i').test(name)) name += ' ' + P.name;
+  if (PL.month && I0.month !== PL.month) name = MS_MRE.test(name) ? name.replace(MS_MRE, (x, p) => p + MS_MON[PL.month % 100 - 1]) : name + ' ' + MS_MON[PL.month % 100 - 1];
+  try {
+    MS.wb = { name: name + '.xlsx', buf }; MS.info = msInspect(await loadXlsx(buf), MS.wb.name);
+    const { blob, res } = await msBuild(); return { name: name + '.xlsx', blob, res };
+  } finally { [MS.wb, MS.info] = keep; }
+}
 async function msTemplate() {
   const wb = await loadXlsx(MS.wb.buf), I = MS.info, mer = (MS.csv[0] || {}).mer || Object.keys(MS.prof)[0] || '?';
   msProfile(wb, I, mer);
@@ -3537,8 +3572,27 @@ EXT.ingest.push(async (file, wb, names, chip) => {
   if (!(names.includes('CardType') && names.includes('TID MID COHERENT') && names.includes('MIX'))) return null;
   const P = msByFile(file.name); if (P) MS.sel = P.id;
   MS.wb = { name: file.name, buf: await file.arrayBuffer() }; MS.info = msInspect(wb, file.name);
+  MS.fmt = { name: file.name, buf: MS.wb.buf }; try { await DB.set('msFmt', MS.fmt); } catch (e) { }
   const I = MS.info, B = I.banners.credit || [];
   Object.assign(chip, { kind: 'Merchant statement tool', ok: true, module: 'M', note: `${(MS.projects.find(p => p.id === MS.sel) || {}).name || ''} · ${I.data} transaksi credit${B.length ? ' · terakhir ' + B[B.length - 1].text : ''}${I.month ? ' · ' + MS_MON[I.month % 100 - 1] + ' ' + Math.floor(I.month / 100) : ''}` });
+  return chip;
+});
+EXT.report.push(async (file, tables, text, chip) => {
+  const raw = new TextDecoder('utf-8').decode(await file.arrayBuffer());
+  if (!/MONTHLY TOTAL SALES SUMMARY/i.test(raw)) return null;
+  const mer = ((raw.match(/Merchant ID\s*:\s*,\s*(\d+)/i) || [])[1] || '').trim(), days = new Map(); let n = 0;
+  raw.split(/\r?\n/).forEach(l => { const c = l.split(','), m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(c[0].trim()); if (!m) return; const t = msTs(`${m[3]}/${m[2]}/${m[1]}`); days.set(t, (days.get(t) || 0) + Math.round(parseFloat(c[2]) * 100)); n += parseInt(c[6]) || 0; });
+  let P = msByMer(mer) || msByFile(file.name);
+  if (!P) { P = { id: 'M' + mer, name: 'Merchant ' + mer, mers: [mer], kw: [] }; MS.projects.push(P); await msSaveProj(); }
+  MS.sel = P.id;
+  const D = MS.data[P.id] || (MS.data[P.id] = { wb: null, info: null, csv: [] }), totC = [...days.values()].reduce((a, v) => a + v, 0);
+  (D.mth || (D.mth = {}))[mer] = { days: [...days], totC, n };
+  Object.assign(chip, { kind: 'Ringkasan bulanan bank (MTH)', ok: true, module: 'M', note: `${P.name} · ${mer} · ${n} transaksi · RM${fmtC(totC)} — untuk semakan` });
+  return chip;
+});
+EXT.ingest.push(async (file, wb, names, chip) => {
+  if (!wb.worksheets.some(ws => /Card Transactions/i.test(msTxt(ws.getCell('A1').value)) && /Report Type/i.test(msTxt(ws.getCell('A3').value)))) return null;
+  Object.assign(chip, { kind: 'Laporan bank (Excel) — diabaikan', ok: true, module: 'M', note: 'Guna fail CSV yang sama' });
   return chip;
 });
 EXT.report.push(async (file, tables, text, chip) => {
@@ -3554,7 +3608,7 @@ EXT.report.push(async (file, tables, text, chip) => {
   return chip;
 });
 EXT.load.push(async () => {
-  MS.prof = await DB.get('msProf', null) || {}; MS.names = await DB.get('msNames', null) || {};
+  MS.fmt = await DB.get('msFmt', null); MS.prof = await DB.get('msProf', null) || {}; MS.names = await DB.get('msNames', null) || {};
   MS.projects = await DB.get('msProjects', null) || []; MS_SEED.forEach(q => { const P = MS.projects.find(p => p.id === q.id); if (!P) MS.projects.push(JSON.parse(JSON.stringify(q))); else q.mers.forEach(m => { if (!P.mers.includes(m)) P.mers.push(m); }); });
   const seeded = new Set(MS_SEED.flatMap(q => q.mers)); MS.projects = MS.projects.filter(p => !(/^M\d/.test(p.id) && p.mers.every(m => seeded.has(m))));
 });
@@ -3593,7 +3647,9 @@ EXT.render.M = function renderM() {
   const cs = MS.csv.slice().sort((a, b) => (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) || a.rep - b.rep);
   h += `<section class="card"><h3>Semakan CSV <span class="pill">${cs.length} fail</span></h3><div class="scroll"><table class="t dense"><tr><th>Fail</th><th>Jenis</th><th>Report</th><th class="r">Transaksi</th><th class="r">Jumlah baris</th><th class="r">Total Debit Amount (CSV)</th><th></th></tr>${cs.map(x => { const s = sum(x.rows), ok = (x.totC == null || x.totC === s) && (!x.items || x.items === x.rows.length); return `<tr><td>${esc(x.name)}</td><td>${x.kind === 'C' ? 'credit' : 'debit'}</td><td>${x.rep ? msD(x.rep) : '?'}</td><td class="r">${x.rows.length}</td><td class="r">${fmtC(s)}</td><td class="r">${x.totC == null ? '-' : fmtC(x.totC)}</td><td>${ok ? '<span class="tag ok">padan</span>' : '<span class="tag bad">tak padan</span>'}</td></tr>`; }).join('')}</table></div>
   ${base ? `<p class="hint">Excel sedia ada: <b>${esc(base.name)}</b> · ${base.rows.length} transaksi · RM${fmtC(base.rows.reduce((a, r) => a + r.amtC, 0))} — CSV baru disambung ke dalamnya (yang sudah ada dilangkau).</p>` : ''}
-  <div class="actions">${MS.csv.length || base ? `<button class="btn ok" data-act="msquick" style="font-size:1.05rem;padding:12px 22px">⬇ DOWNLOAD EXCEL${base ? ' (dikemaskini)' : ''}</button>` : ''}${MS.wb && PL.weeks.some(w => w.C.length || w.D.length || w.X.length) ? `<button class="btn pri" data-act="msdl">⬇ ${esc(fname(msOutName()))}</button>` : ''}${!MS.wb ? `<button class="btn" data-act="msblank">⬇ Template kosong Excel</button>` : ''}${MS.wb ? `<button class="btn" data-act="mstpl">⬇ Template kosong bulan depan</button>` : ''}<span class="sp"></span><button class="btn sm" data-act="msclr">Kosongkan projek ini</button></div></section>`;
+  ${(() => { const M = (MS.data[MS.sel] || {}).mth; if (!M || !MS.csv.length) return ''; const b = Object.values(M).reduce((a, m) => a + m.totC, 0), c = MS.csv.reduce((a, x) => a + x.rows.reduce((y, r) => y + r.amtC, 0), 0); return `<p class="hint ${b === c ? '' : 'bad'}">Semakan bank (MTH): CSV RM${fmtC(c)} · bank RM${fmtC(b)} ${b === c ? '✓ sama' : '· beza RM' + fmtC(c - b)}</p>`; })()}
+  ${msSimple() && !MS.wb && MS.csv.length && !MS.fmt ? `<p class="hint">Mahu format penuh <b>Merchant statement tool</b> (credit · debit · MIX · AMEX)? Seret sekali fail Merchant statement tool (contoh TBS) — formatnya diingat untuk MS / KT.</p>` : ''}
+  <div class="actions">${msSimple() && !MS.wb && MS.fmt && MS.csv.length ? `<button class="btn ok" data-act="msfull" style="font-size:1.05rem;padding:12px 22px">⬇ DOWNLOAD MERCHANT STATEMENT ${esc(MS.projects.find(p => p.id === MS.sel).name)}</button>` : ''}${MS.csv.length || base ? (msSimple() && !MS.wb && MS.fmt && MS.csv.length ? `<button class="btn" data-act="msquick">⬇ Excel ringkas (tarikh &amp; amaun)</button>` : `<button class="btn ok" data-act="msquick" style="font-size:1.05rem;padding:12px 22px">⬇ DOWNLOAD EXCEL${base ? ' (dikemaskini)' : ''}</button>`) : ''}${MS.wb && PL.weeks.some(w => w.C.length || w.D.length || w.X.length) ? `<button class="btn pri" data-act="msdl">⬇ ${esc(fname(msOutName()))}</button>` : ''}${!MS.wb ? `<button class="btn" data-act="msblank">⬇ Template kosong Excel</button>` : ''}${MS.wb ? `<button class="btn" data-act="mstpl">⬇ Template kosong bulan depan</button>` : ''}<span class="sp"></span><button class="btn sm" data-act="msclr">Kosongkan projek ini</button></div></section>`;
   panel().innerHTML = h;
 };
 
@@ -3604,6 +3660,7 @@ document.addEventListener('click', async e => {
     if (miss.length && !confirm(`${miss.length} TID baru belum ada nama operator (${miss.map(x => x[0]).join(', ')}) — lajur Company akan kosong untuk transaksi itu. Teruskan?`)) return;
     await busy('Menyambung minggu ke fail bulan…', async () => { const { blob, res } = await msBuild(); saveBlob(msOutName(), blob); toast(res.map(o => `${o.label}: ${MS_SHEETS.map(s => o[s] ? `${s} +${o[s].added}` : '').filter(Boolean).join(' · ')}`).join(' | ')); });
   }
+  else if (a === 'msfull') await busy('Mengisi Merchant statement tool…', async () => { const q = await msFull(); saveBlob(q.name, q.blob); toast(q.res.map(o => `${o.label}: ${MS_SHEETS.map(s => o[s] ? `${s} +${o[s].added}` : '').filter(Boolean).join(' · ')}`).join(' | ')); });
   else if (a === 'msquick') await busy('Menyediakan Excel baru…', async () => { const q = await msQuick(); saveBlob(q.name, q.blob); toast(`${q.n} transaksi · ${q.days} hari${q.added != null ? ` · +${q.added} baru` : ''}`); });
   else if (a === 'msblank') { const q = await msQuick(true); saveBlob(q.name, q.blob); }
   else if (a === 'mstpl') await busy('Menyediakan template…', async () => { const t = await msTemplate(); saveBlob(t.name, t.blob); });
