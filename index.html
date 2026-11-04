@@ -1200,11 +1200,19 @@ async function ingestMersing(file, wb, chip) {
 }
 function ingestTracker(wb, chip) {
   chip.module = 'C'; chip.kind = 'Undersales Tracker (feri)';
+  const grabG = (g, from, to) => { const out = []; for (let r = from; r < to && r < g.length; r++) { const x = g[r]; if (![0, 1, 2, 3].some(k => clean(x[k]) !== '')) continue; const d = anyDate(x[0]); out.push({ date: d, dateText: d ? dmyStr(d) : clean(x[0]), ref: clean(x[1]), added: cents(x[2]), rec: cents(x[3]), clear: x[5] instanceof Date ? dmyStr(fromJsDate(x[5])) : clean(x[5]) }); } return out; };
+  const per = wb.worksheets.filter(w => /^baki/i.test(clean(w.getCell('A2').value)));
+  if (per.length) {   // one sheet per station: title, "Baki hutang", blank, header (row 4), data from row 5
+    S.C.tracker = S.C.tracker || {};
+    per.forEach(w => { S.C.tracker[norm(w.name)] = grabG(sheetGrid(w).g, 4, Infinity); });
+    DB.set('tracker', S.C.tracker);
+    chip.ok = true; chip.note = per.map(w => `${w.name} ${S.C.tracker[norm(w.name)].length} baris`).join(' · '); return chip;
+  }
   const ws = wb.getWorksheet('UNDERSALES') || wb.worksheets[0], { g } = sheetGrid(ws);
   // a block = station name row, then "Outstanding balance" row, then header row, then data
   const starts = []; g.forEach((r, i) => { if (i + 1 < g.length && /^outstanding balance/i.test(clean(g[i + 1][0])) && clean(r[0])) starts.push(i); });
   if (!starts.length) { chip.note = 'Blok stesen (nama + "Outstanding balance") tidak dijumpai'; chip.warn = true; return chip; }
-  const grab = (from, to) => { const out = []; for (let r = from; r < to && r < g.length; r++) { const x = g[r]; if (![0, 1, 2, 3].some(k => clean(x[k]) !== '')) continue; const d = anyDate(x[0]); out.push({ date: d, dateText: d ? dmyStr(d) : clean(x[0]), ref: clean(x[1]), added: cents(x[2]), rec: cents(x[3]), clear: x[5] instanceof Date ? dmyStr(fromJsDate(x[5])) : clean(x[5]) }); } return out; };
+  const grab = (from, to) => grabG(g, from, to);
   S.C.tracker = S.C.tracker || {};
   starts.forEach((a, i) => { S.C.tracker[norm(g[a][0])] = grab(a + 3, i + 1 < starts.length ? starts[i + 1] : g.length); });
   DB.set('tracker', S.C.tracker);
@@ -1287,45 +1295,52 @@ function trackerAfter() {
     const C = R && R.stations.includes(st) ? computeC(st) : null, rows = (T[st] || []).filter(r => !(R && r.date && dKey(r.date) === dKey(R.dateTo)));
     if (C) {
       const before = rows.filter(r => !r.date || dKey(r.date) < dKey(R.dateTo)).reduce((a, r) => a + r.added - r.rec, 0), gap = C.bf - before;
-      if (gap > 0) rows.unshift({ date: null, dateText: 'b/f', ref: 'Opening balance b/f (entered manually)', added: gap, rec: 0, clear: '' });
-      else if (gap < 0) rows.unshift({ date: null, dateText: 'b/f', ref: 'Opening balance adjustment (entered manually)', added: 0, rec: -gap, clear: '' });
+      if (gap > 0) rows.unshift({ date: null, dateText: 'b/f', ref: 'Baki b/f (manual)', added: gap, rec: 0, clear: '' });
+      else if (gap < 0) rows.unshift({ date: null, dateText: 'b/f', ref: 'Pelarasan baki b/f (manual)', added: 0, rec: -gap, clear: '' });
       const dt = dmyStr(R.dateTo);
-      if (C.nu > 0) rows.push({ date: R.dateTo, dateText: dt, ref: `Under-settlement ${dt}: online NET ${(C.gOn.net / 100).toFixed(2)} less agent charge ${(C.gAg.tot / 100).toFixed(2)}`, added: C.nu, rec: 0, clear: '' });
-      if (C.rec > 0) rows.push({ date: R.dateTo, dateText: dt, ref: `Recovered from ${dt} settlement (NET payable ${(C.np / 100).toFixed(0) === '0' ? '0' : (C.np / 100).toFixed(2)}; RM${(C.rec / 100).toFixed(2)} applied to undersales)`, added: 0, rec: C.rec, clear: '' });
+      if (C.nu > 0) rows.push({ date: R.dateTo, dateText: dt, ref: `Kurang: NET ${(C.gOn.net / 100).toFixed(2)} - agent ${(C.gAg.tot / 100).toFixed(2)}`, added: C.nu, rec: 0, clear: '' });
+      if (C.rec > 0) rows.push({ date: R.dateTo, dateText: dt, ref: 'Bayar balik dari settlement', added: 0, rec: C.rec, clear: '' });
     }
     out[st] = rows;
   });
   return out;
 }
-const trackerFile = () => { const p = ferryProj(); return `UNDERSALES_${(p && p.filePrefix) || 'FERI'}.xlsx`; };
+const trackerFile = () => { const p = ferryProj(); return `UNDERSALES ${((p && p.filePrefix) || 'FERI').replace(/_/g, ' ')}.xlsx`; };
+// old long notes -> short ones
+const trkRef = t => { t = clean(t); let m;
+  if ((m = /^Under-settlement [\d\/]+: online NET ([\d.]+) less agent charge ([\d.]+)/i.exec(t))) return `Kurang: NET ${m[1]} - agent ${m[2]}`;
+  if ((m = /agent short: booking (\w+) under-charged (\d+) tix/i.exec(t))) return `Agent kurang caj: booking ${m[1]} (${m[2]} tiket)`;
+  if (/^Recovered/i.test(t)) return /settled together/i.test(t) ? 'Bayar balik (settle sekali beberapa hari)' : 'Bayar balik dari settlement';
+  if (/^Opening balance b\/f/i.test(t)) return 'Baki b/f (manual)';
+  if (/^Opening balance adjustment/i.test(t)) return 'Pelarasan baki b/f (manual)';
+  return t; };
 async function genTracker(Tr) {
-  const p = ferryProj(), T = TP(p && p.id, 'TRK'), wb = new ExcelJS.Workbook(), ws = tplSheet(wb, 'UNDERSALES', T);
-  const sts = Object.keys(Tr), labels = (S.C.report && S.C.report.labels) || {};
-  const n = Math.max(30, ...sts.map(s => Tr[s].length + 5)), gap = n + 6;     // block = name, balance, header, n rows, 3 blank
-  tplRows(ws, T, 1, 4, 1);
-  ws.getCell('A1').value = `UNDERSALES TRACKER - ${sts.map(s => s).join(' & ')}`;
+  const wb = new ExcelJS.Workbook(), bd = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }, MON = '#,##0.00;[Red](#,##0.00);"-"';
+  const head = { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF305496' } }, alignment: { horizontal: 'center', vertical: 'middle', wrapText: true }, border: bd };
   const dt = v => { if (!v) return null; const d = anyDate(v); return d ? toUTC(d) : v; };
-  let last = 0;
-  sts.forEach((st, bi) => {
-    const a = 6 + bi * gap, s = a + 3, e = s + n - 1, rows = Tr[st];
-    tplRows(ws, T, bi === 0 ? 6 : 42, bi === 0 ? 8 : 44, a);
-    ws.getCell('A' + a).value = st;
-    ws.getCell('C' + (a + 1)).value = fx(`SUM(C${s}:C${e})-SUM(D${s}:D${e})`, rows.reduce((x, r) => x + r.added - r.rec, 0) / 100);
+  Object.keys(Tr).forEach(st => {
+    const ws = wb.addWorksheet(st.slice(0, 31), { views: [{ state: 'frozen', ySplit: 4 }] }), rows = Tr[st], n = Math.max(30, rows.length + 10), s = 5, e = s + n - 1;
+    ws.columns = [{ width: 12 }, { width: 42 }, { width: 14 }, { width: 15 }, { width: 14 }, { width: 13 }];
+    Object.assign(ws.getCell('A1'), { value: `UNDERSALES TRACKER - ${st}`, font: { bold: true, size: 14 } });
+    Object.assign(ws.getCell('A2'), { value: 'Baki hutang (RM):', font: { bold: true, size: 12 } });
+    Object.assign(ws.getCell('C2'), { value: fx(`SUM(C${s}:C${e})-SUM(D${s}:D${e})`, rows.reduce((x, r) => x + r.added - r.rec, 0) / 100), numFmt: MON, font: { bold: true, size: 12, color: { argb: 'FF9C0006' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } }, border: bd });
+    ['Tarikh', 'Keterangan', 'Kurang (RM)', 'Bayar balik (RM)', 'Baki (RM)', 'Tarikh clear'].forEach((h, i) => Object.assign(ws.getCell(4, i + 1), { value: h, style: head }));
+    ws.getRow(4).height = 28;
     let run = 0;
     for (let i = 0; i < n; i++) {
-      const r = s + i, x = rows[i];
-      sty(ws, 'A' + r, T, 'A9', x ? (x.date ? toUTC(x.date) : x.dateText) : null);
-      sty(ws, 'B' + r, T, 'B9', x ? x.ref : null);
-      sty(ws, 'C' + r, T, 'C9', x && x.added ? x.added / 100 : null);
-      sty(ws, 'D' + r, T, 'D9', x && x.rec ? x.rec / 100 : null);
+      const r = s + i, x = rows[i], set = (c, v, f) => { const z = ws.getCell(r, c); z.value = v; z.border = bd; if (f) z.numFmt = f; };
       if (x) run += x.added - x.rec;
-      sty(ws, 'E' + r, T, 'E9', fx(`IF(AND($A${r}="",$C${r}="",$D${r}=""),"",SUM($C$${s}:$C${r})-SUM($D$${s}:$D${r}))`, x ? run / 100 : ''));
-      sty(ws, 'F' + r, T, 'F9', x ? dt(x.clear) : null);
+      set(1, x ? (x.date ? toUTC(x.date) : x.dateText) : null, 'dd/mm/yyyy');
+      set(2, x ? trkRef(x.ref) : null);
+      set(3, x && x.added ? x.added / 100 : null, MON);
+      set(4, x && x.rec ? x.rec / 100 : null, MON);
+      set(5, fx(`IF(AND($A${r}="",$C${r}="",$D${r}=""),"",SUM($C$${s}:$C${r})-SUM($D$${s}:$D${r}))`, x ? run / 100 : ''), MON);
+      set(6, x ? dt(x.clear) : null, 'dd/mm/yyyy');
+      if (x && x.added) ws.getCell(r, 3).font = { color: { argb: 'FF9C0006' } };
+      if (x && x.rec) ws.getCell(r, 4).font = { color: { argb: 'FF006100' } };
     }
-    last = e;
+    ws.pageSetup.printArea = `A1:F${e}`;
   });
-  ws.pageSetup.printArea = `A1:E${last + 1}`;
-  fixBorders(ws);
   return wbBlob(wb);
 }
 
