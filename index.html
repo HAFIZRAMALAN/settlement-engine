@@ -4275,6 +4275,7 @@ const XF = (() => {
   <div class="rvh"><b>Review &amp; Edit</b>${opts.inZip ? `<span class="muted">${esc(name)}</span>` : `<input class="in fn" id="xname" value="${esc(fname(name))}" title="File name to download">`}
     <span class="muted" id="xedc"></span><span class="sp"></span>
     <button class="btn" data-x="opt">Download options</button><button class="btn" data-x="log">Changes</button>
+    <button class="btn" data-x="print" title="Print this sheet (Ctrl+P)">Print</button><button class="btn" data-x="printall" title="Print every sheet that will be downloaded">Print all</button>
     <button class="btn pri" data-x="save">${opts.inZip ? 'Save to ZIP' : 'Save &amp; download'}</button><button class="btn" data-x="orig" title="Download the original file without changes">Original</button><button class="btn" data-x="close">✕</button></div>
   <div class="xtb">
     <span class="gp"><button data-x="undo" title="Undo (Ctrl+Z)">↶</button><button data-x="redo" title="Redo (Ctrl+Y)">↷</button></span>
@@ -4297,6 +4298,40 @@ const XF = (() => {
     document.body.appendChild(el);
     M = { el, wb, name, blob, onSave, opts, si: 0, cur: { r: 1, c: 1 }, sel: { r1: 1, c1: 1, r2: 1, c2: 1 }, undo: [], redo: [], log: new Map(), ops: [], skip: new Set(), clip: null, cx: new XF.Ctx(wb), edit: null };
     drawTabs(); draw(); focusSink(); status();
+  }
+
+  /* ---------- print: the sheet as laid out in Excel (print area, widths, merges, styles), A4, fit to page width ---------- */
+  function printHtml(ws) {
+    const pa = /^\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)$/.exec(String((ws.pageSetup || {}).printArea || '').split(',')[0].replace(/^.*!/, ''));
+    const cn = s => [...s].reduce((a, ch) => a * 26 + ch.charCodeAt(0) - 64, 0);
+    const r1 = pa ? +pa[2] : 1, c1 = pa ? cn(pa[1]) : 1, r2 = pa ? +pa[4] : lastR(ws), c2 = pa ? cn(pa[3]) : lastC(ws);
+    const mg = merges(ws), span = new Map(), hide = new Set();
+    mg.forEach(m => { span.set(KEY(m.top, m.left), m); for (let r = m.top; r <= m.bottom; r++) for (let c = m.left; c <= m.right; c++) if (r !== m.top || c !== m.left) hide.add(KEY(r, c)); });
+    const v = (ws.views || [])[0] || {}, head = Math.min(v.state === 'frozen' ? v.ySplit || 0 : 0, r2 - r1 + 1, 12);
+    const wpx = []; for (let c = c1; c <= c2; c++) { const col = ws.getColumn(c); wpx.push(col.hidden ? 0 : Math.round((col.width || 9) * 7 + 5)); }
+    const row = r => { const rw = ws.findRow(r); if (rw && rw.hidden) return ''; let h = `<tr style="height:${Math.round(((rw && rw.height) || 15) * 1.33)}px">`;
+      for (let c = c1; c <= c2; c++) { const k = KEY(r, c); if (hide.has(k)) continue; const cell = ws.findCell(r, c), sp = span.get(k), x = cell ? shownOf(ws, cell) : { t: '' };
+        const al = cell && cell.alignment || {}, ha = al.horizontal && al.horizontal !== 'general' ? (al.horizontal === 'centerContinuous' ? 'center' : /fill|justify|distributed/.test(al.horizontal) ? 'left' : al.horizontal) : x.num ? 'right' : '';
+        const st = (cell ? cssOf(cell) : '') + (ha ? ';text-align:' + ha : '');
+        h += `<td${sp ? ` rowspan="${Math.min(sp.bottom, r2) - sp.top + 1}" colspan="${Math.min(sp.right, c2) - sp.left + 1}"` : ''}${st ? ` style="${st}"` : ''}>${esc(x.t)}</td>`; }
+      return h + '</tr>'; };
+    let th = '', tb = ''; for (let r = r1; r <= r2; r++) (r < r1 + head ? (th += row(r)) : (tb += row(r)));
+    const total = wpx.reduce((a, b) => a + b, 0), land = (ws.pageSetup || {}).orientation === 'landscape' || ((ws.pageSetup || {}).orientation !== 'portrait' && total > 760);
+    return { land, html: `<section style="--z:${Math.min(1, (land ? 1060 : 720) / Math.max(total, 1)).toFixed(3)}"><table style="width:${total}px"><colgroup>${wpx.map(w => `<col style="width:${w}px">`).join('')}</colgroup>${th ? `<thead>${th}</thead>` : ''}<tbody>${tb}</tbody></table></section>` };
+  }
+  function printWb(all) {
+    const list = all ? M.wb.worksheets.filter((w, i) => !M.skip.has(i)) : [W()];
+    const parts = list.map(printHtml), land = parts.some(p => p.land);
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(fname(M.name || 'print'))}</title><style>
+@page{size:A4 ${land ? 'landscape' : 'portrait'};margin:10mm}
+body{margin:0;font:11px Calibri,"Segoe UI",Arial,sans-serif;color:#000;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+section{zoom:var(--z)}section+section{break-before:page}
+table{border-collapse:collapse;table-layout:fixed}td{padding:1px 3px;white-space:nowrap;overflow:hidden;vertical-align:bottom}
+thead{display:table-header-group}tr{break-inside:avoid}
+</style></head><body>${parts.map(p => p.html).join('')}</body></html>`;
+    const f = document.createElement('iframe'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'; document.body.appendChild(f);
+    f.contentDocument.open(); f.contentDocument.write(doc); f.contentDocument.close();
+    setTimeout(() => { f.contentWindow.focus(); f.contentWindow.print(); setTimeout(() => f.remove(), 1000); }, 150);
   }
 
   /* ---------- grid ---------- */
@@ -4774,6 +4809,7 @@ const XF = (() => {
   document.addEventListener('keyup', e => { if (M && M.edit && e.target === M.edit.inp && /Arrow|Home|End/.test(e.key)) hintFn(); });
   document.addEventListener('keydown', e => {
     if (!M || !M.wb) return; const k = e.key, ctl = e.ctrlKey || e.metaKey, t = e.target;
+    if (ctl && (k === 'p' || k === 'P')) { e.preventDefault(); printWb(e.shiftKey); return; }
     if (t.id === 'xnb') { if (k === 'Enter') { e.preventDefault(); const v = t.value.trim().toUpperCase().replace(/\$/g, ''), m = /^([A-Z]{1,3})(\d+)(?::([A-Z]{1,3})(\d+))?$/.exec(v); if (m) { select(+m[2], XF.colN(m[1])); if (m[3]) { M.sel = { r1: +m[2], c1: XF.colN(m[1]), r2: +m[4], c2: XF.colN(m[3]) }; ensure(+m[4]); paint(); status(); } focusSink(); } else toast('Invalid address — e.g. D25 or A1:C9', 'warn'); } return; }
     if (t.id === 'xq') { if (k === 'Enter') { e.preventDefault(); findNext(); } return; }
     if (M.edit && t === M.edit.inp) {
@@ -4828,6 +4864,8 @@ const XF = (() => {
       if (a !== 'tab' && M.edit && !b.closest('.xmenu')) { if (a === 'pclose') { } else endEdit(true); }
       menuOff();
       if (a === 'close') { if ((M.log.size || M.ops.length) && !confirm(`There are ${M.log.size + M.ops.length} unsaved changes. Close without saving?`)) return; close(); }
+      else if (a === 'print') printWb(false);
+      else if (a === 'printall') printWb(true);
       else if (a === 'orig') { const m = M; close(); m.onSave(m.blob, m.opts.inZip ? m.name : fname(m.name)); }
       else if (a === 'save') save();
       else if (a === 'tab') switchSheet(+b.dataset.i);
