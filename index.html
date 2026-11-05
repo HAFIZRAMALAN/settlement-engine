@@ -5022,7 +5022,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v35';
+  const VER = 'v36';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5044,6 +5044,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
       <div style="display:flex;gap:6px;margin-bottom:6px"><select class="in" id="fbType" style="flex:none"><option>Problem</option><option>Improvement</option><option>Question</option></select><input class="in" id="fbWho" placeholder="Your name" value="${esc(FB.who)}" style="flex:1;max-width:none"></div>
       <textarea class="in" id="fbTxt" rows="4" style="width:100%;max-width:none;resize:vertical;font:inherit" placeholder="What happened / what should change? e.g. Ferry tab: tracker b/f wrong for 12/11 — expected 125.28"></textarea>
       <div class="actions" style="margin-top:8px"><button class="btn sm pri" data-fb="add">Save note</button><span style="flex:1"></span>${FB.notes.length ? `<button class="btn sm ok" data-fb="copy">Copy all (${FB.notes.length})</button><button class="btn sm" data-fb="clear">Clear all</button>` : ''}</div>
+      ${FB.notes.length ? `<div class="actions" style="margin-top:6px"><span class="muted" style="font-size:.78rem;align-self:center">Send to the person in charge:</span><button class="btn sm" data-fb="wa">WhatsApp</button><button class="btn sm" data-fb="mail">Email</button></div>` : ''}
       ${FB.notes.length ? `<div style="max-height:240px;overflow:auto;margin-top:10px;border-top:1px solid var(--line)">${FB.notes.map((n, i) => `<div style="padding:8px 0;border-bottom:1px solid var(--line);font-size:.8rem"><div style="display:flex;gap:8px"><b>${esc(n.type)}</b><span class="muted">${esc(n.when)} · ${esc(n.ctx.tab)}${n.who ? ' · ' + esc(n.who) : ''}</span><span style="flex:1"></span><button class="btn sm" data-fb="del" data-i="${i}" title="Delete">×</button></div><div style="white-space:pre-wrap">${esc(n.text)}</div></div>`).join('')}</div>` : ''}
       ${FB.errs.length ? `<p style="margin-top:8px">${FB.errs.length} recent error(s) recorded — included automatically.</p>` : ''}`;
     if (!refresh) setTimeout(() => { const t = p.querySelector('#fbTxt'); if (t) t.focus(); }, 0);
@@ -5059,6 +5060,8 @@ thead{display:table-header-group}tr{break-inside:avoid}
       toast('Note saved'); paintBtn(); fbPanel(true);
     }
     else if (a === 'copy') { toast(await copy(fbText(FB.notes)) ? `Copied ${FB.notes.length} note(s) — paste them anywhere` : 'Copy failed', 'ok'); }
+    else if (a === 'wa') { await copy(fbText(FB.notes)); window.open('https://wa.me/?text=' + encodeURIComponent(fbText(FB.notes).slice(0, 6000)), '_blank', 'noopener'); }
+    else if (a === 'mail') { const t = fbText(FB.notes); await copy(t); location.href = 'mailto:?subject=' + encodeURIComponent(`Settlement Engine feedback (${FB.notes.length})`) + '&body=' + encodeURIComponent(t.length > 1800 ? t.slice(0, 1800) + '\n\n[Too long for email link — the full text is on the clipboard, paste it here]' : t); toast('Email opened — the full text is also on the clipboard'); }
     else if (a === 'del') { FB.notes.splice(+t.dataset.i, 1); await DB.set('fbNotes', FB.notes); paintBtn(); fbPanel(true); }
     else if (a === 'clear') { if (!confirm(`Delete all ${FB.notes.length} notes? Copy them first if they are not sent yet.`)) return; FB.notes = []; await DB.set('fbNotes', FB.notes); paintBtn(); fbPanel(true); }
   });
