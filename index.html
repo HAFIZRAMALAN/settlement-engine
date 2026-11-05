@@ -5002,6 +5002,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
       { t: 'Open files…', s: 'Choose raw files', run: () => { const d = document.getElementById('drop'); if (d) d.click(); } },
       ...['light', 'dim', 'dark'].map(m => ({ t: 'Theme: ' + m[0].toUpperCase() + m.slice(1), s: 'Appearance', run: () => { const b = document.querySelector(`#thm [data-t=${m}]`); if (b) b.click(); } })),
       { t: 'Review & edit before download: on / off', s: 'Setting', run: () => { const b = document.querySelector('[data-rv=pill]'); if (b) b.click(); } },
+      { t: 'Write feedback / report a problem', s: 'Feedback', run: () => fbPanel() },
       ...(FS ? [{ t: 'Choose output folder…', s: 'Files', run: pick }, { t: 'Backup now', s: 'Files', run: () => backupNow(false) }] : [])];
   }
   function palette() {
@@ -5020,9 +5021,58 @@ thead{display:table-header-group}tr{break-inside:avoid}
   }
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
+  /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
+  const VER = 'v35';
+  const FB = { notes: [], errs: [], who: '' };
+  const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
+  window.addEventListener('error', e => logErr(e.message + (e.filename ? ` @${String(e.filename).split('/').pop()}:${e.lineno}` : '')));
+  window.addEventListener('unhandledrejection', e => logErr('Promise: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
+  const toast0 = toast; toast = function (msg, kind) { if (kind === 'bad') logErr('Shown to user: ' + msg); return toast0.apply(this, arguments); };
+  const tabName = k => (TABS.find(t => t[0] === k) || [k, k])[1];
+  const ctx = () => ({ tab: tabName(S.tab), files: (S.files || []).map(f => `${f.name}${f.ok ? '' : ' (not recognised)'}`).slice(0, 25), errs: FB.errs.slice(-5), ua: (navigator.userAgent.match(/(Edg|Chrome|Firefox)\/[\d.]+/) || [''])[0] });
+  const fbText = list => [`SETTLEMENT ENGINE FEEDBACK — ${VER} — copied ${stamp(new Date())} — ${list.length} note${list.length === 1 ? '' : 's'}`, '',
+    ...list.map((n, i) => [`${i + 1}. [${n.type}] ${n.when} · Tab: ${n.ctx.tab}${n.who ? ' · By: ' + n.who : ''} · ${n.ver}`, ...n.text.split('\n').map(l => '   ' + l),
+      n.ctx.files.length ? `   Files loaded: ${n.ctx.files.join(', ')}` : '', n.ctx.errs.length ? `   Recent errors:\n${n.ctx.errs.map(x => '     - ' + x).join('\n')}` : '', `   Browser: ${n.ctx.ua}`, ''].filter(Boolean).join('\n'))].join('\n');
+  async function copy(t) { try { await navigator.clipboard.writeText(t); return true; } catch (e) { const a = document.createElement('textarea'); a.value = t; document.body.appendChild(a); a.select(); const ok = document.execCommand('copy'); a.remove(); return ok; } }
+  function fbPanel(refresh) {
+    let p = document.getElementById('fbp');
+    if (p && !refresh) { p.remove(); return; }
+    const tp = document.getElementById('tlp'); if (tp) tp.remove();
+    if (!p) { p = document.createElement('div'); p.id = 'fbp'; p.className = 'tlp'; p.style.width = '420px'; document.body.appendChild(p); }
+    p.innerHTML = `<h4>Feedback</h4><p>Write a problem or an improvement. The tab, loaded files and recent errors are attached automatically. Press <b>Copy all</b> and send it on.</p>
+      <div style="display:flex;gap:6px;margin-bottom:6px"><select class="in" id="fbType" style="flex:none"><option>Problem</option><option>Improvement</option><option>Question</option></select><input class="in" id="fbWho" placeholder="Your name" value="${esc(FB.who)}" style="flex:1;max-width:none"></div>
+      <textarea class="in" id="fbTxt" rows="4" style="width:100%;max-width:none;resize:vertical;font:inherit" placeholder="What happened / what should change? e.g. Ferry tab: tracker b/f wrong for 12/11 — expected 125.28"></textarea>
+      <div class="actions" style="margin-top:8px"><button class="btn sm pri" data-fb="add">Save note</button><span style="flex:1"></span>${FB.notes.length ? `<button class="btn sm ok" data-fb="copy">Copy all (${FB.notes.length})</button><button class="btn sm" data-fb="clear">Clear all</button>` : ''}</div>
+      ${FB.notes.length ? `<div style="max-height:240px;overflow:auto;margin-top:10px;border-top:1px solid var(--line)">${FB.notes.map((n, i) => `<div style="padding:8px 0;border-bottom:1px solid var(--line);font-size:.8rem"><div style="display:flex;gap:8px"><b>${esc(n.type)}</b><span class="muted">${esc(n.when)} · ${esc(n.ctx.tab)}${n.who ? ' · ' + esc(n.who) : ''}</span><span style="flex:1"></span><button class="btn sm" data-fb="del" data-i="${i}" title="Delete">×</button></div><div style="white-space:pre-wrap">${esc(n.text)}</div></div>`).join('')}</div>` : ''}
+      ${FB.errs.length ? `<p style="margin-top:8px">${FB.errs.length} recent error(s) recorded — included automatically.</p>` : ''}`;
+    if (!refresh) setTimeout(() => { const t = p.querySelector('#fbTxt'); if (t) t.focus(); }, 0);
+  }
+  document.addEventListener('click', async e => {
+    const t = e.target.closest('[data-fb]'), p = document.getElementById('fbp');
+    if (!t) { if (p && !p.contains(e.target) && !e.target.closest('#fbb')) p.remove(); return; }
+    const a = t.dataset.fb;
+    if (a === 'add') {
+      const txt = p.querySelector('#fbTxt').value.trim(); if (!txt) { toast('Write something first', 'warn'); return; }
+      FB.who = p.querySelector('#fbWho').value.trim(); await DB.set('fbWho', FB.who);
+      FB.notes.push({ type: p.querySelector('#fbType').value, text: txt, who: FB.who, when: stamp(new Date()), ver: VER, ctx: ctx() }); await DB.set('fbNotes', FB.notes);
+      toast('Note saved'); paintBtn(); fbPanel(true);
+    }
+    else if (a === 'copy') { toast(await copy(fbText(FB.notes)) ? `Copied ${FB.notes.length} note(s) — paste them anywhere` : 'Copy failed', 'ok'); }
+    else if (a === 'del') { FB.notes.splice(+t.dataset.i, 1); await DB.set('fbNotes', FB.notes); paintBtn(); fbPanel(true); }
+    else if (a === 'clear') { if (!confirm(`Delete all ${FB.notes.length} notes? Copy them first if they are not sent yet.`)) return; FB.notes = []; await DB.set('fbNotes', FB.notes); paintBtn(); fbPanel(true); }
+  });
+  function paintFb() {
+    let b = document.getElementById('fbb');
+    if (!b) { const thm = document.getElementById('thm'); if (!thm) return; b = document.createElement('button'); b.id = 'fbb'; b.className = 'tlb'; thm.parentNode.insertBefore(b, document.getElementById('tlb') || thm); b.onclick = () => fbPanel(); }
+    b.innerHTML = `Feedback${FB.notes.length ? ` <b>${FB.notes.length}</b>` : ''}`; b.title = 'Write a problem or an improvement for the developer';
+  }
+  const paintBtn0 = paintBtn; paintBtn = function () { paintBtn0(); paintFb(); };
+
   /* ---------- start ---------- */
   EXT.load.push(async () => {
     if (FS) { TL.dir = await DB.get('tlDir', null); TL.month = await DB.get('tlMonth', true); TL.last = await DB.get('tlLastBackup', ''); }
+    FB.notes = await DB.get('fbNotes', []); FB.errs = await DB.get('fbErrs', []); FB.who = await DB.get('fbWho', '');
     paintBtn(); autoBackup();
   });
 })();
