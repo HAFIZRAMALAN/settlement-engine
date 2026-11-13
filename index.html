@@ -472,7 +472,30 @@ function findLabelValue(tables, labelRe) {
 }
 
 /* ====================== FILE INGEST + CLASSIFY ====================== */
-async function loadXlsx(buf) { const wb = new ExcelJS.Workbook(); await wb.xlsx.load(buf); return wb; }
+async function slimXlsx(buf) {
+  if (buf.byteLength < 1e6) return buf;
+  let z; try { z = await JSZip.loadAsync(buf); } catch (e) { return buf; }
+  const big = Object.keys(z.files).filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n) && ((z.files[n]._data || {}).uncompressedSize || 0) > 6e6);
+  if (!big.length) return buf;
+  for (const n of big) {
+    const x = await z.files[n].async('string'), a = x.indexOf('<sheetData>'), b = x.lastIndexOf('</sheetData>'); if (a < 0 || b < 0) continue;
+    // keep a row only if it holds something other than empty styled cells and TRUE/FALSE tick boxes (those run down to row 1,048,576)
+    const keep = []; let p = a + 11;
+    while (p < b) {
+      const s0 = x.indexOf('<row', p); if (s0 < 0 || s0 >= b) break;
+      const gt = x.indexOf('>', s0); let e;
+      if (x[gt - 1] === '/') e = gt + 1; else { e = x.indexOf('</row>', gt); e = e < 0 ? b : e + 6; }
+      const r = x.slice(s0, e); p = e;
+      if (r.indexOf('<v>') < 0 && r.indexOf('<is>') < 0 && r.indexOf('<f') < 0) continue;
+      let real = false;
+      for (let q = r.indexOf('<c '); q >= 0; q = r.indexOf('<c ', q + 3)) { const g = r.indexOf('>', q); if (r[g - 1] === '/') continue; const tag = r.slice(q, g); if (tag.indexOf('t="b"') < 0 || r.indexOf('<f', g) === g + 1) { real = true; break; } }
+      if (real) keep.push(r);
+    }
+    z.file(n, x.slice(0, a + 11) + keep.join('') + x.slice(b));
+  }
+  return z.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+}
+async function loadXlsx(buf) { const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await slimXlsx(buf)); return wb; }
 function detectTerm(text) {
   const t = text.toLowerCase();
   const p = S.projects.find(p => p.kind === 'terminal' && (p.match || []).some(m => m && t.includes(clean(m).toLowerCase())));
@@ -641,6 +664,7 @@ function parseInvoice(tables, text) {
 
 /* ---------- ledger helpers ---------- */
 const compBalance = c => c.total + c.deductions.reduce((a, d) => a + d.amount, 0);
+const coKey = s => norm(s).replace(/[^A-Z0-9]/g, ''), coSame = (a, b) => coKey(a) === coKey(b);   // "JENGKA X" = "JENGKAX", "ALI BABA" = "ALIBABA"
 const entryKey = e => { const d = parseDMY(e.date); return d ? dKey(d) : 0; };
 function undoDate(L, key) {
   L = JSON.parse(JSON.stringify(L));
@@ -671,7 +695,7 @@ function computeA(term) {
   const ov = P.ov, dk = st.dateKey, L = undoDate(S.ledger[term], dk);
   const rows = st.rows.map((r, i) => ({ ...r, i, net: r.sales + r.terminal + r.pickup + r.parking, adj: Array(K).fill(0), under: 0, props: [] }));
   rows.sort((a, b) => dKey(a.date) - dKey(b.date) || a.i - b.i);
-  const consumed = new Set(), seen = new Set();
+  const consumed = new Set(), seen = new Set(), tagged = new Set(L.comp.filter(c => c.col).map(c => norm(c.col)));   // charge records imported for one named column (TOS / RFID)
   rows.forEach(r => {
     const ck = norm(r.company);
     if (r.net > 0) {
@@ -686,7 +710,7 @@ function computeA(term) {
       if (col.kind === 'raw') { r.adj[j] = (r.extra && r.extra[norm(col.name)]) || 0; return; }
       const key = j + '|' + ck; if (seen.has(key)) return;
       if (col.kind === 'comp') {
-        const rec = L.comp.find(c => c.active !== false && norm(c.company) === ck && compBalance(c) > 0);
+        const rec = L.comp.find(c => c.active !== false && coSame(c.company, r.company) && compBalance(c) > 0.004 && (c.col ? norm(c.col) === norm(col.name) : !tagged.has(norm(col.name))));
         if (!rec) return;
         seen.add(key);
         const bal = Math.round(compBalance(rec) * 100), avail = Math.max(r.net + r.under, 0), prop = avail > 0 ? -Math.min(avail, bal) : 0;
@@ -2832,12 +2856,15 @@ function renderChips() {
 async function handleFiles(list) {
   const files = Array.from(list); if (!files.length) return;
   await busy('Reading files…', async () => {
+    let i = 0, bad = 0; const bt = document.getElementById('busyTxt');
     for (const f of files) {
-      const chip = await ingest(f); S.files.push(chip);
+      if (bt && files.length > 1) { bt.textContent = `Reading ${++i} of ${files.length} — ${f.name}`; await tick(); }
+      const chip = await ingest(f); S.files.push(chip); if (!chip.ok) bad++;
       if (chip.ok && chip.module === 'A') { S.tab = 'A'; S.termTab = chip.term; }
       else if (chip.ok && chip.module === 'B') S.tab = 'B'; else if (chip.ok && chip.module === 'C') S.tab = 'C'; else if (chip.ok && chip.module === 'L') S.tab = 'L'; else if (chip.ok && chip.module === 'K') S.tab = 'K'; else if (chip.ok && chip.module === 'T') S.tab = 'T'; else if (chip.ok && chip.module === 'E') S.tab = 'E'; else if (chip.ok && EXT.render[chip.module]) S.tab = chip.module;
       if (!chip.ok) toast(`${f.name}: ${chip.note || 'not recognised'}`, 'bad');
     }
+    if (files.length > 1) toast(`${files.length - bad} of ${files.length} files read${bad ? ` · ${bad} not recognised` : ''}`, bad ? 'warn' : 'ok');
   });
   renderAll();
 }
@@ -2997,7 +3024,7 @@ function cSt() {
     <div class="stat"><small>Undersales b/f</small><b><input class="in big" type="number" step="0.01" data-act="bf" data-st="${st}" value="${(C.bf / 100).toFixed(2)}"></b></div>
     ${stat('NET PAYABLE', fmtC(C.np), 'hl')}${stat('New / Restored', fmtC(C.nu) + ' / ' + fmtC(C.rec))}${stat('Undersales c/f', fmtC(C.cf), C.cf > 0 ? 'warnc' : '')}</div>
     <table class="t dense"><tr><th>Date</th><th class="r">Tickets</th><th class="r">Ticket Sales</th><th class="r">Proc. Fee</th><th class="r">Commission</th><th class="r">SST</th><th class="r">MDR</th><th class="r">SST MDR</th><th class="r">NET</th><th class="r">Agent tickets</th><th class="r">Agent charge</th></tr>${C.don.map((d, i) => `<tr><td>${dmyStr(d.d)}</td><td class="r">${d.t}</td><td class="r">${fmtC(d.sales)}</td><td class="r">${fmtC(d.proc)}</td><td class="r">${moneyHtml(d.comm)}</td><td class="r">${moneyHtml(d.sc)}</td><td class="r">${moneyHtml(d.mdr)}</td><td class="r">${moneyHtml(d.sm)}</td><td class="r"><b>${fmtC(d.net)}</b></td><td class="r">${C.dag[i].t}</td><td class="r">${fmtC(C.dag[i].tot)}</td></tr>`).join('')}<tr class="tot"><td>Grand Total</td><td class="r">${C.gOn.t}</td><td class="r">${fmtC(C.gOn.sales)}</td><td class="r">${fmtC(C.gOn.proc)}</td><td class="r">${moneyHtml(C.gOn.comm)}</td><td class="r">${moneyHtml(C.gOn.sc)}</td><td class="r">${moneyHtml(C.gOn.mdr)}</td><td class="r">${moneyHtml(C.gOn.sm)}</td><td class="r">${fmtC(C.gOn.net)}</td><td class="r">${C.gAg.t}</td><td class="r">${fmtC(C.gAg.tot)}</td></tr></table>
-    ${chkHtml(ch)}<div class="actions"><button class="btn" data-act="dlc" data-v="${st}">⬇ ${stFile(st)}_SALES_MASTERLIST_${stampC(C.from)}.xlsx</button></div></section>`;
+    ${chkHtml(ch)}<div class="actions"><button class="btn" data-act="dlc" data-v="${st}">⬇ ${stFile(st)}_SALES_MASTERLIST_${stampRange(R.dateFrom, R.dateTo)}.xlsx</button></div></section>`;
   }).join('');
 }
 function cTrk() {
@@ -3010,9 +3037,9 @@ async function downloadC(v) {
   const R = S.C.report;
   if (v === 'SAVE') { S.C.tracker = trackerAfter(); await DB.set('tracker', S.C.tracker); toast('Tracker saved in the browser. Download the file too for your records.'); cSt(); cTrk(); return; }
   await busy('Building Excel files…', async () => {
-    const one = async st => ({ name: `${stFile(st)}_SALES_MASTERLIST_${stampC(computeC(st).from)}.xlsx`, blob: await genMasterlist(st) });
+    const one = async st => ({ name: `${stFile(st)}_SALES_MASTERLIST_${stampRange(R.dateFrom, R.dateTo)}.xlsx`, blob: await genMasterlist(st) });
     if (v === 'TRK') { saveBlob(trackerFile(), await genTracker(trackerAfter())); return; }
-    if (v === 'ALL') { const z = new JSZip(); for (const st of stations()) { if (computeC(st)) { const f = await one(st); z.file(f.name, f.blob); } } z.file(trackerFile(), await genTracker(trackerAfter())); saveBlob(`${(ferryProj() || {}).filePrefix || 'FERI'}_${stampC(R.dateTo)}.zip`, await z.generateAsync({ type: 'blob' })); return; }
+    if (v === 'ALL') { const z = new JSZip(); for (const st of stations()) { if (computeC(st)) { const f = await one(st); z.file(f.name, f.blob); } } z.file(trackerFile(), await genTracker(trackerAfter())); saveBlob(`${(ferryProj() || {}).filePrefix || 'FERI'}_${stampRange(R.dateFrom, R.dateTo)}.zip`, await z.generateAsync({ type: 'blob' })); return; }
     const f = await one(v); saveBlob(f.name, f.blob);
   });
 }
@@ -3030,7 +3057,7 @@ function renderL() {
   <div class="row"><label class="chk"><input type="checkbox" data-act="ldone" ${ledShowDone ? 'checked' : ''}> Show “Done deduction” history (${done.length})</label><span class="sp"></span><button class="btn sm" data-act="lexp">Export Excel</button><label class="btn sm">Import Excel<input type="file" accept=".xlsx" hidden data-act="limp"></label></div>
   <div class="scroll tall"><table class="t dense"><tr><th>Date</th><th>Company</th><th class="r">RM</th><th>Cleared</th><th>Checked</th><th>Remarks</th><th></th></tr>${list.map(e => `<tr><td>${esc(e.date)}</td><td>${esc(e.company)}</td><td class="r">${(+e.amount).toFixed(2)}</td><td>${esc(e.clearedOn)}</td><td><input type="checkbox" data-act="lchk" data-id="${e.id}" ${e.checked ? 'checked' : ''}></td><td><input class="in w" data-act="lrem" data-id="${e.id}" value="${esc(e.remarks)}"></td><td><button class="x" data-act="ldel" data-id="${e.id}" title="Delete">×</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">Empty.</td></tr>'}</table></div>
   <form class="row add" data-act="ladd"><input class="in" name="date" placeholder="dd/mm/yyyy" size="11"><input class="in" name="company" placeholder="Company" required><input class="in" name="amount" type="number" step="0.01" placeholder="RM" required><button class="btn sm">+ Add</button></form></section>
-  <section class="card"><h3>Barrier-gate compensation — ${t}</h3><table class="t dense"><tr><th>Company</th><th class="r">Total</th><th class="r">Deducted</th><th class="r">Balance</th><th>Active</th><th></th></tr>${L.comp.map(c => `<tr><td>${esc(c.company)}</td><td class="r">${c.total.toFixed(2)}</td><td class="r">${c.deductions.reduce((a, d) => a + d.amount, 0).toFixed(2)}</td><td class="r"><b>${compBalance(c).toFixed(2)}</b></td><td><input type="checkbox" data-act="cact" data-id="${c.id}" ${c.active !== false ? 'checked' : ''}></td><td><button class="x" data-act="cdel" data-id="${c.id}">×</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No records (e.g. SRIMAJU 2,155.00).</td></tr>'}</table>
+  <section class="card"><h3>Charges &amp; compensation — ${t} <span class="pill">${L.comp.filter(c => compBalance(c) > 0.004).length} outstanding · RM ${fmtC(Math.round(L.comp.reduce((a, c) => a + Math.max(compBalance(c), 0), 0) * 100))}</span></h3><p class="hint">Drop <b>TOS Manual Invoice</b>, <b>RFID list</b> or the <b>undersales list</b> Excel to fill this. Each record feeds the Daily Settlement column shown; the amount deducted is capped at the day's net and at the balance.</p><div class="scroll tall"><table class="t dense"><tr><th>Column in Daily Settlement</th><th>Company</th><th class="r">Total</th><th class="r">Deducted</th><th class="r">Balance</th><th>Active</th><th></th></tr>${L.comp.slice().sort((a, b) => (compBalance(b) > 0.004) - (compBalance(a) > 0.004) || (a.col || '').localeCompare(b.col || '') || a.company.localeCompare(b.company)).map(c => `<tr${compBalance(c) > 0.004 ? '' : ' class="muted"'}><td>${esc(c.col || 'Barrier gate')}</td><td>${esc(c.company)}</td><td class="r">${c.total.toFixed(2)}</td><td class="r">${c.deductions.reduce((a, d) => a + d.amount, 0).toFixed(2)}</td><td class="r"><b>${compBalance(c).toFixed(2)}</b></td><td><input type="checkbox" data-act="cact" data-id="${c.id}" ${c.active !== false ? 'checked' : ''}></td><td><button class="x" data-act="cdel" data-id="${c.id}">×</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No records (e.g. SRIMAJU 2,155.00).</td></tr>'}</table></div>
   <form class="row add" data-act="cadd"><input class="in" name="company" placeholder="Company" required><input class="in" name="total" type="number" step="0.01" placeholder="Compensation total" required><button class="btn sm">+ Add</button></form></section>
   <section class="card"><h3>Daily Settlement adjustment columns — ${t}</h3><p class="hint">Column names change between reports. <b>manual</b> = type it yourself (R8); <b>compensation</b> = automatic suggestion from the ledger (R7); <b>from raw</b> = new column in the system report (added automatically when found).</p>
   ${S.cfg[t].adj.map((a, j) => `<div class="row"><input class="in w" data-act="cname" data-j="${j}" value="${esc(a.name)}"><select class="in" data-act="ckind" data-j="${j}"><option value="manual" ${a.kind === 'manual' ? 'selected' : ''}>manual</option><option value="comp" ${a.kind === 'comp' ? 'selected' : ''}>compensation</option><option value="raw" ${a.kind === 'raw' ? 'selected' : ''}>from raw (system column)</option></select><button class="x" data-act="cxdel" data-j="${j}">×</button></div>`).join('')}<div class="row"><button class="btn sm" data-act="cxadd">+ Adjustment column</button></div></section>
@@ -3155,6 +3182,120 @@ async function loadState() {
   DEF_SETK.ops.forEach(d => { if (!S.setK.ops.some(o => o.code === d.code)) S.setK.ops.push(JSON.parse(JSON.stringify(d))); });
 }
 (async function boot() { await tick(); await loadState(); for (const f of EXT.load) await f(); renderAll(); })();
+
+
+/* ===== ext: charges.js ===== */
+/* ====================== CHARGES — the team's own Excel files: TOS manual pickup, RFID, barrier gate, undersales lists ======================
+   TOS Manual Invoice (sheet "Template") and the RFID lists hold tables of
+     Bus Operator | No. | Rate | Amount (RM) | <deduction per settlement date …> | Balance
+   Each table becomes charge records (same ledger as barrier-gate compensation) tagged with a Daily Settlement column name, e.g.
+   "Manual Pickup Charges Oct' 26" / "RFID Charges Dec' 25". That column is then filled automatically (up to the day's net, capped at the balance). */
+const CH_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function chMonth(t) { const m = /\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\W{0,3}(\d{4}|\d{2})\b/i.exec(String(t || '')); return m ? `${CH_MON[CH_MON.findIndex(x => x.toUpperCase() === m[1].toUpperCase().slice(0, 3))]}' ${m[2].slice(-2)}` : ''; }
+// "10/11/26", "23-25/01/2026", "19/12/25 - 21/12/25", a Date → the same text Daily Settlement uses for its date (so a re-run of that date replaces the row)
+function chDateKey(v) {
+  if (v instanceof Date) return dmyStr(fromJsDate(v));
+  const t = clean(v), ds = [], re = /(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})/g; let m;
+  while ((m = re.exec(t))) ds.push({ d: +m[1], m: +m[2], y: m[3].length === 2 ? 2000 + +m[3] : +m[3], i: m.index });
+  if (!ds.length) return 'x:' + t;
+  if (ds.length === 1) { const p = /(\d{1,2})\s*-\s*$/.exec(t.slice(0, ds[0].i)); return p ? rangeText({ ...ds[0], d: +p[1] }, ds[0]) : dmyStr(ds[0]); }
+  return rangeText(ds[0], ds[ds.length - 1]);
+}
+function chBlocks(g) {
+  const out = [];
+  for (let r = 0; r < g.length; r++) {
+    const c = g[r].findIndex(x => norm(x) === 'BUS OPERATOR'); if (c < 0) continue;
+    const H = g[r], amt = []; for (let k = c + 1; k < H.length; k++) if (/^AMOUNT/i.test(clean(H[k]))) amt.push(k);
+    if (!amt.length) continue;
+    const iAmt = amt[0], iBal = amt.length > 1 ? amt[amt.length - 1] : H.length;
+    let title = '', cat = 'T';
+    for (let k = r - 1; k >= Math.max(0, r - 4); k--) { const t = g[k].map(clean).filter(Boolean).join(' '); if (/RFID/i.test(t)) cat = 'R'; else if (/BARRIER/i.test(t) && cat !== 'R') cat = 'B'; if (!title && chMonth(t)) title = t; }
+    const rows = [];
+    for (let k = r + 1; k < g.length; k++) {
+      const co = clean(g[k][c]); if (!co || /^TOTAL/i.test(co) || norm(co) === 'BUS OPERATOR') break;
+      let total = num(g[k][iAmt]); if (total == null) { const q = num(g[k][c + 1]), rt = num(g[k][c + 2]); total = q != null && rt != null && iAmt > c + 2 ? q * rt : 0; }
+      const ded = []; for (let j = iAmt + 1; j < iBal; j++) { const v = num(g[k][j]); if (v) ded.push({ label: H[j] instanceof Date ? dmyStr(fromJsDate(H[j])) : clean(H[j]), key: chDateKey(H[j]), amount: -Math.abs(v) }); }
+      if (total > 0 || ded.length) rows.push({ company: co, total: Math.round(total * 100) / 100, ded });
+    }
+    if (rows.length) out.push({ cat, month: chMonth(title), rows });
+  }
+  return out;
+}
+const chCol = b => b.cat === 'B' ? '' : `${b.cat === 'R' ? 'RFID Charges' : 'Manual Pickup Charges'} ${b.month}`.trim();
+function chImport(term, blocks, src) {
+  ensureTerm(term); const L = S.ledger[term], cfg = S.cfg[term], alias = cfg.alias || {}, cols = new Map();
+  blocks.forEach(b => {
+    const col = chCol(b);
+    b.rows.forEach(x => {
+      const company = alias[coKey(x.company)] || x.company, keys = new Set(x.ded.map(d => d.key));
+      let rec = L.comp.find(c => (c.col || '') === col && coSame(c.company, company));
+      const kept = rec ? rec.deductions.filter(d => !d.x && !keys.has(d.key)) : [];           // deductions Confirmed in the engine that the Excel does not show yet
+      if (!rec) { rec = { id: uid(), active: true }; L.comp.push(rec); }
+      Object.assign(rec, { company, total: x.total, src, deductions: x.ded.map(d => ({ key: d.key, date: d.label, amount: d.amount, x: true })).concat(kept) });
+      if (col) rec.col = col;
+      const bal = compBalance(rec); if (col) cols.set(col, (cols.get(col) || 0) + (bal > 0.004 ? bal : 0));
+    });
+  });
+  // a Daily Settlement column for every table that still has a balance
+  cols.forEach((bal, col) => { const a = cfg.adj.find(x => norm(x.name) === norm(col)); if (a) a.kind = 'comp'; else if (bal > 0.004) cfg.adj.push({ name: col, kind: 'comp' }); });
+  DB.set('ledger', S.ledger); DB.set('cfg', S.cfg);
+  return cols;
+}
+function chTerm(sheets, fileName) {
+  const ids = terms(), byText = ws => { const t = [1, 2, 3, 4].map(r => [1, 2, 3, 4].map(c => clean(cellVal(ws.getCell(r, c)))).join(' ')).join(' ').toUpperCase();
+    return ids.find(id => { const n = norm(termName(id)).replace(/ BUS TERMINAL| TERMINAL/g, ''); return n && t.includes(n); }) || (/MELAKA/.test(t) ? 'MS' : /TERENGGANU/.test(t) ? 'KT' : null); };
+  for (const ws of sheets) { const t = byText(ws); if (t) return t; }
+  return ids.find(t => new RegExp(`(^|[^A-Z])${t}([^A-Z]|$)`, 'i').test(fileName)) || ids[0];
+}
+
+/* ---------- TOS Manual Invoice / RFID list ---------- */
+EXT.ingest.push(async (file, wb, names, chip) => {
+  const tos = names.includes('Template') && /TOS|MANUAL/i.test(file.name + ' ' + names.join(' ')), rfid = /RFID/i.test(file.name) || names.includes('RFID');
+  if (!tos && !rfid) return null;
+  const sheets = tos ? [wb.getWorksheet('Template')] : wb.worksheets.filter(w => w.state !== 'hidden' && w.state !== 'veryHidden');
+  const blocks = sheets.flatMap(w => chBlocks(sheetGrid(w).g)).filter(b => b.cat !== 'B');
+  chip.module = 'L'; chip.kind = tos ? 'TOS manual pickup charges' : 'RFID charges';
+  if (!blocks.length) { chip.note = 'No "Bus Operator / Amount (RM)" table found'; chip.warn = true; return chip; }
+  const term = chTerm(sheets, file.name), cols = chImport(term, blocks, file.name);
+  if (typeof ledTerm !== 'undefined') ledTerm = term;
+  const open = [...cols].filter(([, b]) => b > 0.004);
+  chip.ok = true; chip.term = term;
+  chip.note = `${term} · ${blocks.reduce((a, b) => a + b.rows.length, 0)} operators in ${cols.size} table${cols.size === 1 ? '' : 's'} · ` + (open.length ? open.slice(0, 3).map(([c, b]) => `${c}: RM ${fmtC(Math.round(b * 100))} outstanding`).join(' · ') + (open.length > 3 ? ` · +${open.length - 3} more` : '') : 'all cleared');
+  return chip;
+});
+
+/* ---------- undersales lists (KT UNDERSALES LIST.xlsx / Undersales MS List.xlsx): active list + DONE DEDUCTION + barrier gate ---------- */
+function chList(ws, forceCleared) {
+  if (!ws) return [];
+  const g = sheetGrid(ws).g, H = x => clean(x).toUpperCase();
+  const hr = g.findIndex((r, i) => i < 20 && r.some(x => /^DATE/.test(H(x))) && r.some(x => /^(AMOUNT|RM)$/.test(H(x)))); if (hr < 0) return [];
+  const h = g[hr].map(H), iD = h.findIndex(x => /^DATE/.test(x) && !/CLEAR|DEDUCT/.test(x)), iA = h.findIndex((x, j) => j > iD && /^(AMOUNT|RM)$/.test(x));
+  const cand = []; for (let j = iD + 1; j < iA; j++) if (/COMPANY|NAME/.test(h[j])) cand.push(j);
+  const fill = j => g.slice(hr + 1, hr + 60).filter(r => clean(r[j])).length, iN = cand.sort((a, b) => fill(b) - fill(a))[0]; if (iN == null) return [];
+  const iC = [iA + 1, iA + 2].find(j => /CLEAR|DEDUCT/.test(h[j] || '')), iK = [iA + 1, iA + 2, iA + 3].find(j => j !== iC && (/CHECK/.test(h[j] || '') || g.slice(hr + 1, hr + 8).some(r => typeof r[j] === 'boolean')));
+  const txt = v => v instanceof Date ? dmyStr(fromJsDate(v)) : clean(v), out = [];
+  for (let r = hr + 1; r < g.length; r++) {
+    const x = g[r], co = clean(x[iN]), amt = num(x[iA]); if (!co || !amt) continue;
+    out.push({ id: uid(), date: txt(x[iD]), company: co, amount: amt, clearedOn: iC != null && txt(x[iC]) || (forceCleared ? 'done' : ''), clearedBy: '', checked: iK != null && (x[iK] === true || /^(y|yes|true|1|✓|x)$/i.test(clean(x[iK]))), remarks: '', createdOn: '' });
+  }
+  return out;
+}
+ingestLedgerXlsx = function (wb, chip) {
+  chip.module = 'L'; chip.kind = 'Undersales list';
+  const names = wb.worksheets.map(w => w.name), term = names.some(n => /KT UNDERSALES/i.test(n)) ? 'KT' : 'MS';
+  const act = wb.getWorksheet(term === 'KT' ? 'KT UNDERSALES LIST' : 'UNDERSALES (2)') || wb.worksheets.find(w => /UNDERSALES/i.test(w.name) && w.state !== 'hidden');
+  const live = chList(act, false), done = chList(wb.getWorksheet('DONE DEDUCTION'), true);
+  if (!live.length && !done.length) { chip.note = 'No Date / Company / Amount list found'; chip.warn = true; return chip; }
+  ensureTerm(term); S.ledger[term].entries = live.concat(done);
+  const bg = wb.worksheets.filter(w => /BARRIER/i.test(w.name)).flatMap(w => chBlocks(sheetGrid(w).g)).map(b => ({ ...b, cat: 'B' }));
+  if (bg.length) chImport(term, bg, chip.name);
+  DB.set('ledger', S.ledger);
+  if (typeof ledTerm !== 'undefined') ledTerm = term;
+  const out = live.filter(e => !e.clearedOn);
+  chip.ok = true; chip.term = term;
+  chip.note = `${term} · ${out.length} outstanding · RM ${fmtC(out.reduce((a, e) => a + cents(e.amount), 0))} · ${live.length - out.length + done.length} cleared${bg.length ? ` · barrier gate: ${bg.reduce((a, b) => a + b.rows.length, 0)}` : ''}`;
+  return chip;
+};
 
 
 /* ===== ext: custom.js ===== */
@@ -5022,7 +5163,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v36';
+  const VER = 'v37';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5078,6 +5219,36 @@ thead{display:table-header-group}tr{break-inside:avoid}
     FB.notes = await DB.get('fbNotes', []); FB.errs = await DB.get('fbErrs', []); FB.who = await DB.get('fbWho', '');
     paintBtn(); autoBackup();
   });
+})();
+
+/* ====================== version badge · new-version notice · drag overlay ====================== */
+const SE_VER = 'v37';
+(function () {
+  if (typeof HTMLElement === 'undefined') return;
+  const css = document.createElement('style');
+  css.textContent = `
+.ver{font-size:.7rem;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:0 5px;margin-left:8px;font-weight:500}
+.upd{position:fixed;left:50%;transform:translateX(-50%);top:64px;z-index:70;background:var(--ink);color:var(--card);border-radius:6px;padding:8px 10px 8px 14px;display:flex;gap:12px;align-items:center;font-size:.84rem;box-shadow:0 4px 16px rgba(0,0,0,.25)}
+.upd button{border:0;border-radius:4px;padding:4px 10px;font:inherit;cursor:pointer;background:var(--pri);color:#fff}.upd button.x{background:none;color:inherit;opacity:.7}
+body.dragging::after{content:"Drop files to read them";position:fixed;inset:10px;z-index:80;border:2px dashed var(--pri);border-radius:10px;background:color-mix(in srgb,var(--pri) 8%,transparent);display:grid;place-items:center;font-size:1.2rem;font-weight:600;color:var(--pri);pointer-events:none}`;
+  document.head.appendChild(css);
+  // version next to the name
+  const b = document.querySelector('.brand b'); if (b && !b.querySelector('.ver')) b.insertAdjacentHTML('beforeend', `<span class="ver">${SE_VER}</span>`);
+  // drag overlay
+  let n = 0; const has = e => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+  window.addEventListener('dragenter', e => { if (has(e)) { n++; document.body.classList.add('dragging'); } });
+  window.addEventListener('dragleave', e => { if (has(e) && --n <= 0) { n = 0; document.body.classList.remove('dragging'); } });
+  window.addEventListener('drop', () => { n = 0; document.body.classList.remove('dragging'); });
+  // hosted copy (https): tell the user when a newer version has been published
+  async function check() {
+    if (!/^https?:$/.test(location.protocol) || document.querySelector('.upd')) return;
+    try {
+      const t = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text(), m = /const SE_VER = 'v(\d+)'/.exec(t);
+      if (m && +m[1] > +SE_VER.slice(1)) { const d = document.createElement('div'); d.className = 'upd'; d.innerHTML = `<span>Version <b>v${m[1]}</b> is available (you have ${SE_VER}).</span><button data-u="go">Reload</button><button class="x" data-u="x">Later</button>`; document.body.appendChild(d);
+        d.addEventListener('click', e => { const a = e.target.dataset.u; if (a === 'go') location.reload(); else if (a === 'x') d.remove(); }); }
+    } catch (e) { }
+  }
+  setTimeout(check, 8000); setInterval(check, 30 * 60 * 1000);
 })();
 
 
