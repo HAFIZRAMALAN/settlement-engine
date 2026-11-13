@@ -3024,7 +3024,7 @@ function cSt() {
     <div class="stat"><small>Undersales b/f</small><b><input class="in big" type="number" step="0.01" data-act="bf" data-st="${st}" value="${(C.bf / 100).toFixed(2)}"></b></div>
     ${stat('NET PAYABLE', fmtC(C.np), 'hl')}${stat('New / Restored', fmtC(C.nu) + ' / ' + fmtC(C.rec))}${stat('Undersales c/f', fmtC(C.cf), C.cf > 0 ? 'warnc' : '')}</div>
     <table class="t dense"><tr><th>Date</th><th class="r">Tickets</th><th class="r">Ticket Sales</th><th class="r">Proc. Fee</th><th class="r">Commission</th><th class="r">SST</th><th class="r">MDR</th><th class="r">SST MDR</th><th class="r">NET</th><th class="r">Agent tickets</th><th class="r">Agent charge</th></tr>${C.don.map((d, i) => `<tr><td>${dmyStr(d.d)}</td><td class="r">${d.t}</td><td class="r">${fmtC(d.sales)}</td><td class="r">${fmtC(d.proc)}</td><td class="r">${moneyHtml(d.comm)}</td><td class="r">${moneyHtml(d.sc)}</td><td class="r">${moneyHtml(d.mdr)}</td><td class="r">${moneyHtml(d.sm)}</td><td class="r"><b>${fmtC(d.net)}</b></td><td class="r">${C.dag[i].t}</td><td class="r">${fmtC(C.dag[i].tot)}</td></tr>`).join('')}<tr class="tot"><td>Grand Total</td><td class="r">${C.gOn.t}</td><td class="r">${fmtC(C.gOn.sales)}</td><td class="r">${fmtC(C.gOn.proc)}</td><td class="r">${moneyHtml(C.gOn.comm)}</td><td class="r">${moneyHtml(C.gOn.sc)}</td><td class="r">${moneyHtml(C.gOn.mdr)}</td><td class="r">${moneyHtml(C.gOn.sm)}</td><td class="r">${fmtC(C.gOn.net)}</td><td class="r">${C.gAg.t}</td><td class="r">${fmtC(C.gAg.tot)}</td></tr></table>
-    ${chkHtml(ch)}<div class="actions"><button class="btn" data-act="dlc" data-v="${st}">⬇ ${stFile(st)}_SALES_MASTERLIST_${stampRange(R.dateFrom, R.dateTo)}.xlsx</button></div></section>`;
+    ${chkHtml(ch)}<div class="actions"><button class="btn" data-act="dlc" data-v="${st}">⬇ ${stFile(st)}_SALES_MASTERLIST_${stampRange(S.C.report.dateFrom, S.C.report.dateTo)}.xlsx</button></div></section>`;
   }).join('');
 }
 function cTrk() {
@@ -3037,9 +3037,9 @@ async function downloadC(v) {
   const R = S.C.report;
   if (v === 'SAVE') { S.C.tracker = trackerAfter(); await DB.set('tracker', S.C.tracker); toast('Tracker saved in the browser. Download the file too for your records.'); cSt(); cTrk(); return; }
   await busy('Building Excel files…', async () => {
-    const one = async st => ({ name: `${stFile(st)}_SALES_MASTERLIST_${stampRange(R.dateFrom, R.dateTo)}.xlsx`, blob: await genMasterlist(st) });
+    const one = async st => ({ name: `${stFile(st)}_SALES_MASTERLIST_${stampRange(S.C.report.dateFrom, S.C.report.dateTo)}.xlsx`, blob: await genMasterlist(st) });
     if (v === 'TRK') { saveBlob(trackerFile(), await genTracker(trackerAfter())); return; }
-    if (v === 'ALL') { const z = new JSZip(); for (const st of stations()) { if (computeC(st)) { const f = await one(st); z.file(f.name, f.blob); } } z.file(trackerFile(), await genTracker(trackerAfter())); saveBlob(`${(ferryProj() || {}).filePrefix || 'FERI'}_${stampRange(R.dateFrom, R.dateTo)}.zip`, await z.generateAsync({ type: 'blob' })); return; }
+    if (v === 'ALL') { const z = new JSZip(); for (const st of stations()) { if (computeC(st)) { const f = await one(st); z.file(f.name, f.blob); } } z.file(trackerFile(), await genTracker(trackerAfter())); saveBlob(`${(ferryProj() || {}).filePrefix || 'FERI'}_${stampRange(S.C.report.dateFrom, S.C.report.dateTo)}.zip`, await z.generateAsync({ type: 'blob' })); return; }
     const f = await one(v); saveBlob(f.name, f.blob);
   });
 }
@@ -5163,7 +5163,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v38';
+  const VER = 'v39';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5222,7 +5222,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v38';
+const SE_VER = 'v39';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
