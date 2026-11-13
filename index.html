@@ -5163,7 +5163,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v37';
+  const VER = 'v38';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5222,7 +5222,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v37';
+const SE_VER = 'v38';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
@@ -5244,11 +5244,15 @@ body.dragging::after{content:"Drop files to read them";position:fixed;inset:10px
     if (!/^https?:$/.test(location.protocol) || document.querySelector('.upd')) return;
     try {
       const t = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text(), m = /const SE_VER = 'v(\d+)'/.exec(t);
+      const fresh = () => location.replace(location.pathname + '?v=' + m[1]);   // a new URL, so the browser cannot serve its cached copy
+      // nothing loaded yet → switch to the new version straight away (once per version, in case the server itself is stale)
+      if (m && +m[1] > +SE_VER.slice(1) && !(S.files || []).length && new URLSearchParams(location.search).get('v') !== m[1]) return fresh();
       if (m && +m[1] > +SE_VER.slice(1)) { const d = document.createElement('div'); d.className = 'upd'; d.innerHTML = `<span>Version <b>v${m[1]}</b> is available (you have ${SE_VER}).</span><button data-u="go">Reload</button><button class="x" data-u="x">Later</button>`; document.body.appendChild(d);
-        d.addEventListener('click', e => { const a = e.target.dataset.u; if (a === 'go') location.reload(); else if (a === 'x') d.remove(); }); }
+        d.addEventListener('click', e => { const a = e.target.dataset.u; if (a === 'go') fresh(); else if (a === 'x') d.remove(); }); }
     } catch (e) { }
   }
-  setTimeout(check, 8000); setInterval(check, 30 * 60 * 1000);
+  setTimeout(check, 1500); setInterval(check, 30 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });   // coming back to the tab
 })();
 
 
