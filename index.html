@@ -135,8 +135,26 @@ main{max-width:1280px;margin:0 auto;padding:20px 24px 60px}
 .toast{border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.2)}
 .t th{font-weight:600;font-size:.78rem;text-transform:none;letter-spacing:0}
 #tabs button{white-space:nowrap}
-@media(max-width:1500px){.top{flex-wrap:wrap;row-gap:0;padding-top:8px}#tabs{order:3;flex-basis:100%;margin:0 -10px}.brand{margin-right:auto}}
+
 @media(max-width:900px){.top{padding:8px 16px}main{padding:16px}}
+
+/* ---------- layout by project: sidebar + content ---------- */
+.top{flex-wrap:nowrap!important;padding:0 20px!important;gap:10px}.brand{margin-right:auto}
+.shell{display:grid;grid-template-columns:248px minmax(0,1fr);align-items:start}
+#side{position:sticky;top:57px;height:calc(100vh - 57px);overflow:auto;border-right:1px solid var(--line);background:var(--card);padding:6px 10px 20px}
+#tabs{display:block;flex:none}
+#tabs .grp{font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);padding:16px 10px 6px}
+#tabs button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:8px;text-align:left;padding:7px 10px;margin:1px 0;white-space:normal;font-size:.86rem;line-height:1.3}
+#tabs button.on{background:var(--soft)!important;color:var(--ink);font-weight:600;box-shadow:inset 3px 0 0 var(--pri)}
+#tabs button.on::after{display:none}
+#tabs .tn{display:block}#tabs .tb{flex:none}
+main{max-width:1560px;margin:0;padding:20px 28px 60px}
+.ph{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 0 14px}.ph h2{margin:0;font-size:1.3rem;font-weight:600}.ph span{color:var(--mut);font-size:.84rem}
+.drop.hero.mini{padding:10px 16px!important}.drop.hero.mini .hsub{display:none}.drop.hero.mini .htxt b{font-size:.9rem;font-weight:500;color:var(--mut)}
+.chips{margin:10px 0 14px}.fl{display:flex;align-items:center;gap:12px;font-size:.8rem;color:var(--mut);margin:0 0 6px;flex-basis:100%}.fl b{color:var(--ink)}
+.lnk{border:0;background:none;color:var(--pri);cursor:pointer;font:inherit;padding:0}.lnk:hover{text-decoration:underline}
+#panel .seg:has([data-act="term"]){display:none}
+@media(max-width:1000px){.shell{display:block}#side{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);padding:6px 10px;overflow-x:auto}#tabs{display:flex;gap:2px}#tabs .grp{display:none}#tabs button{width:auto;white-space:nowrap}#tabs button.on{box-shadow:inset 0 -2px 0 var(--pri)}main{padding:16px}}
 </style>
 <script>(function(){var t='light';try{t=localStorage.getItem('se-theme')||'light'}catch(e){}document.documentElement.setAttribute('data-theme',t);
 document.addEventListener('DOMContentLoaded',function(){var w=document.getElementById('thm');if(!w)return;var mark=function(){[].forEach.call(w.children,function(b){b.classList.toggle('on',b.dataset.t===document.documentElement.getAttribute('data-theme'))})};mark();
@@ -145,9 +163,10 @@ w.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)re
 <body>
 <header class="top">
   <div class="brand"><div class="logo"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M4 12h16M4 17h7"/><path d="M15 16l2.5 2.5L22 14"/></svg></div><div><b>Settlement Engine</b><small>NSS IT Solution</small></div></div>
-  <nav id="tabs"></nav>
 <div class="thm" id="thm"><button data-t="light">Light</button><button data-t="dim">Dim</button><button data-t="dark">Dark</button></div></header>
+<div class="shell"><aside id="side"><nav id="tabs"></nav></aside>
 <main>
+  <div id="ptitle" class="ph"></div>
   <div id="drop" class="drop hero">
     <svg class="hart" viewBox="0 0 300 120" aria-hidden="true"><defs><linearGradient id="hg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#14b8a6"/></linearGradient><linearGradient id="hg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#eef2ff"/></linearGradient></defs>
       <g class="hdocs"><rect x="14" y="30" width="54" height="68" rx="7" fill="#e0e7ff" transform="rotate(-8 41 64)"/><rect x="22" y="24" width="54" height="68" rx="7" fill="url(#hg2)" stroke="#c7d2fe" stroke-width="1.5"/><path d="M31 40h28M31 50h36M31 60h22M31 70h32M31 80h18" stroke="#a5b4fc" stroke-width="3" stroke-linecap="round"/><text x="49" y="111" font-size="9" text-anchor="middle" fill="#64748b" font-family="Segoe UI,Arial">CSV · XLS</text></g>
@@ -156,10 +175,10 @@ w.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)re
       <path class="hflow" d="M184 58h34" stroke="url(#hg1)" stroke-width="3" stroke-dasharray="5 5" stroke-linecap="round"/>
       <g class="hxl"><rect x="226" y="24" width="62" height="68" rx="7" fill="#fff" stroke="#99f6e4" stroke-width="1.5"/><rect x="226" y="24" width="62" height="14" rx="7" fill="#14b8a6"/><rect x="226" y="31" width="62" height="7" fill="#14b8a6"/><path d="M226 52h62M226 66h62M226 80h62M247 38v54M267 38v54" stroke="#ccfbf1" stroke-width="1.5"/><rect x="249" y="68" width="16" height="10" rx="2" fill="#fde68a"/><text x="257" y="111" font-size="9" text-anchor="middle" fill="#64748b" font-family="Segoe UI,Arial">Excel siap</text></g>
     </svg>
-    <div class="htxt"><b>Drop raw files here</b><span class="hsub">or <u>click to choose</u> — file type and project are detected from the content. Everything runs in this browser; nothing is uploaded.</span></div></div><input id="fileIn" type="file" multiple hidden></div>
+    <div class="htxt"><b>Drop raw files here</b><span class="hsub">or <u>click to choose</u> — file type and project are detected from the content. Everything runs in this browser; nothing is uploaded.</span></div></div><input id="fileIn" type="file" multiple hidden>
   <div id="chips" class="chips"></div>
   <div id="panel"></div>
-</main>
+</main></div>
 <div id="toasts"></div>
 <div id="busy" hidden><div class="spin"></div><span id="busyTxt">Please wait…</span></div>
 <script>/*! ExcelJS 19-10-2023 */
@@ -1367,7 +1386,7 @@ function trackerAfter() {
   const R = S.C.report, T = JSON.parse(JSON.stringify(S.C.tracker || {}));
   const out = {};
   trackerStations().forEach(st => {
-    const C = R && R.stations.includes(st) ? computeC(st) : null, rows = (T[st] || []).filter(r => !(R && r.date && dKey(r.date) === dKey(R.dateTo)));
+    const C = R && R.stations.includes(st) ? computeC(st) : null, rows = (T[st] || []).filter(r => !(R && r.date && dKey(r.date) === dKey(R.dateTo) && trkAuto(r.ref)));
     if (C) {
       const before = rows.filter(r => !r.date || dKey(r.date) < dKey(R.dateTo)).reduce((a, r) => a + r.added - r.rec, 0), gap = C.bf - before;
       if (gap > 0) rows.unshift({ date: null, dateText: 'b/f', ref: 'Balance b/f (manual)', added: gap, rec: 0, clear: '' });
@@ -1376,12 +1395,16 @@ function trackerAfter() {
       if (C.nu > 0) rows.push({ date: R.dateTo, dateText: dt, ref: `Short: NET ${(C.gOn.net / 100).toFixed(2)} - agent ${(C.gAg.tot / 100).toFixed(2)}`, added: C.nu, rec: 0, clear: '' });
       if (C.rec > 0) rows.push({ date: R.dateTo, dateText: dt, ref: 'Recovered from settlement', added: 0, rec: C.rec, clear: '' });
     }
-    out[st] = rows;
+    out[st] = trkSort(rows);
   });
   return out;
 }
 const trackerFile = () => { const p = ferryProj(); return `UNDERSALES ${((p && p.filePrefix) || 'FERI').replace(/_/g, ' ')}.xlsx`; };
 // old long notes -> short ones
+const trkAuto = t => /^(Short: NET|Recovered from settlement|Under-settlement|Recovered from \d|Kurang: NET|Bayar balik dari)/i.test(clean(t));
+// a row with no date and no amount is a note (free text): notes go under the table, never inside it; rows are kept in date order
+const trkNote = r => !r.date && !r.added && !r.rec;
+const trkSort = rows => { const d = rows.filter(r => !trkNote(r)).map((r, i) => ({ r, i })).sort((a, b) => (a.r.date ? dKey(a.r.date) : 0) - (b.r.date ? dKey(b.r.date) : 0) || a.i - b.i).map(x => x.r); return d.concat(rows.filter(trkNote)); };
 const trkRef = t => { t = clean(t); let m;
   if ((m = /^(?:Under-settlement [\d\/]+: online NET|Kurang: NET) ([\d.]+) (?:less agent charge|- agent) ([\d.]+)/i.exec(t))) return `Short: NET ${m[1]} - agent ${m[2]}`;
   if ((m = /(?:agent short: booking (\w+) under-charged (\d+) tix|Agent kurang caj: booking (\w+) \((\d+) tiket\))/i.exec(t))) return `Agent under-charged: booking ${m[1] || m[3]} (${m[2] || m[4]} tix)`;
@@ -1395,7 +1418,8 @@ async function genTracker(Tr) {
   const head = { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF305496' } }, alignment: { horizontal: 'center', vertical: 'middle', wrapText: true }, border: bd };
   const dt = v => { if (!v) return null; const d = anyDate(v); return d ? toUTC(d) : v; };
   Object.keys(Tr).forEach(st => {
-    const ws = wb.addWorksheet(st.slice(0, 31), { views: [{ state: 'frozen', ySplit: 4 }] }), rows = Tr[st], n = Math.max(30, rows.length + 10), s = 5, e = s + n - 1;
+    const all = trkSort(Tr[st] || []), rows = all.filter(r => !trkNote(r)), notes = all.filter(trkNote).map(r => clean([r.dateText, r.ref].filter(Boolean).join(' '))).filter(t => t && !/^notes?:?$/i.test(t));
+    const ws = wb.addWorksheet(st.slice(0, 31), { views: [{ state: 'frozen', ySplit: 4 }] }), n = Math.max(30, rows.length + 10), s = 5, e = s + n - 1;
     ws.columns = [{ width: 12 }, { width: 42 }, { width: 14 }, { width: 15 }, { width: 14 }, { width: 13 }];
     Object.assign(ws.getCell('A1'), { value: `UNDERSALES TRACKER - ${st}`, font: { bold: true, size: 14 } });
     Object.assign(ws.getCell('A2'), { value: 'Outstanding balance (RM):', font: { bold: true, size: 12 } });
@@ -1406,16 +1430,23 @@ async function genTracker(Tr) {
     for (let i = 0; i < n; i++) {
       const r = s + i, x = rows[i], set = (c, v, f) => { const z = ws.getCell(r, c); z.value = v; z.border = bd; if (f) z.numFmt = f; };
       if (x) run += x.added - x.rec;
-      set(1, x ? (x.date ? toUTC(x.date) : x.dateText) : null, 'dd/mm/yyyy');
-      set(2, x ? trkRef(x.ref) : null);
+      set(1, x ? (x.date ? toUTC(x.date) : x.dateText) : null, 'dd/mm/yyyy'); ws.getCell(r, 1).alignment = { horizontal: 'right' };
+      set(2, x ? trkRef(x.ref) : null); ws.getCell(r, 2).alignment = { wrapText: true, vertical: 'top' };
       set(3, x && x.added ? x.added / 100 : null, MON);
       set(4, x && x.rec ? x.rec / 100 : null, MON);
-      set(5, fx(`IF(AND($A${r}="",$C${r}="",$D${r}=""),"",SUM($C$${s}:$C${r})-SUM($D$${s}:$D${r}))`, x ? run / 100 : ''), MON);
+      set(5, fx(`IF(AND($C${r}="",$D${r}=""),"",SUM($C$${s}:$C${r})-SUM($D$${s}:$D${r}))`, x ? run / 100 : ''), MON);
       set(6, x ? dt(x.clear) : null, 'dd/mm/yyyy');
       if (x && x.added) ws.getCell(r, 3).font = { color: { argb: 'FF9C0006' } };
       if (x && x.rec) ws.getCell(r, 4).font = { color: { argb: 'FF006100' } };
+      if (x && trkRef(x.ref).length > 46) ws.getRow(r).height = 15 * Math.ceil(trkRef(x.ref).length / 46);
     }
-    ws.pageSetup.printArea = `A1:F${e}`;
+    // notes: under the table, merged across the sheet and wrapped, so no column ever has to be widened
+    let last = e;
+    if (notes.length) {
+      Object.assign(ws.getCell(e + 2, 1), { value: 'Notes', font: { bold: true } });
+      notes.forEach((t, i) => { const r = e + 3 + i; ws.mergeCells(r, 1, r, 6); Object.assign(ws.getCell(r, 1), { value: t, alignment: { wrapText: true, vertical: 'top' } }); ws.getRow(r).height = 15 * Math.max(1, Math.ceil(t.length / 105)); last = r; });
+    }
+    ws.pageSetup.printArea = `A1:F${last}`;
   });
   return wbBlob(wb);
 }
@@ -2908,8 +2939,8 @@ function aComp() {
   const cols = S.cfg[t].adj.map((c, j) => ({ ...c, j })).filter(c => c.kind === 'comp');
   if (!cols.length) { el.hidden = true; return; } el.hidden = false;
   const rows = []; C.rows.forEach(r => (r.comp || []).forEach(ci => rows.push({ r, ci })));
-  el.innerHTML = `<h3>Barrier-gate compensation <span class="pill">${rows.length}</span></h3><p class="hint">Suggestion: take the whole positive net of the day, capped at the balance. You can change it (number deducted). Set active companies in the <b>Ledger &amp; Settings</b> tab.</p>` +
-    (rows.length ? `<table class="t"><tr><th>Company</th><th class="r">Balance</th><th class="r">Suggested</th><th class="r">Use (RM)</th></tr>${rows.map(({ r, ci }) => `<tr><td>${esc(r.company)}</td><td class="r">${fmtC(ci.bal)}</td><td class="r">${fmtC(ci.prop)}</td><td class="r"><input class="in" type="number" step="0.01" data-act="comp" data-key="${esc(ci.key)}" value="${(r.adj[ci.j] / 100).toFixed(2)}"></td></tr>`).join('')}</table>` : '<p class="muted">No active companies with a balance in the compensation ledger.</p>');
+  el.innerHTML = `<h3>Charges &amp; compensation to deduct <span class="pill">${rows.length}</span></h3><p class="hint">Manual pickup (TOS), RFID and barrier-gate balances from the ledger. Suggestion: the whole positive net of the day, capped at the balance. You can change it (number deducted). Set active companies in <b>Ledger &amp; Settings</b>.</p>` +
+    (rows.length ? `<table class="t"><tr><th>Column</th><th>Company</th><th class="r">Balance</th><th class="r">Suggested</th><th class="r">Use (RM)</th></tr>${rows.map(({ r, ci }) => `<tr><td>${esc((C.cfg.adj[ci.j] || {}).name || '')}</td><td>${esc(r.company)}</td><td class="r">${fmtC(ci.bal)}</td><td class="r">${fmtC(ci.prop)}</td><td class="r"><input class="in" type="number" step="0.01" data-act="comp" data-key="${esc(ci.key)}" value="${(r.adj[ci.j] / 100).toFixed(2)}"></td></tr>`).join('')}</table>` : '<p class="muted">No active companies with a balance in the compensation ledger.</p>');
 }
 function aManual() {
   const t = S.termTab, P = S.A[t], cfg = S.cfg[t], el = $('#a-manual'); if (!el) return;
@@ -5163,7 +5194,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v39';
+  const VER = 'v40';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5222,7 +5253,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v39';
+const SE_VER = 'v40';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
@@ -5320,20 +5351,43 @@ document.addEventListener('change', async e => {
 
 
 /* ===== ext: ui.js ===== */
-/* ====================== FRONT PAGE LOOK — tab icons, loaded-file badges, hero state ====================== */
+/* ====================== LAYOUT BY PROJECT — sidebar (Projects / Tools / Settings), page title, files of the open project only ====================== */
 // Pure DOM/CSS: no images or libraries, so it adds nothing to load or processing time.
 (function () {
   if (typeof HTMLElement === 'undefined') return;            // headless test harness
-  const ICON = { A: ['🚌', '#e0e7ff'], B: ['🛣️', '#fef3c7'], C: ['⛴️', '#cffafe'], K: ['✈️', '#e0f2fe'], T: ['🚉', '#fce7f3'], E: ['✉️', '#ede9fe'], M: ['💳', '#dcfce7'], X: ['🧩', '#ffedd5'], P: ['🗂️', '#f1f5f9'], L: ['📒', '#fef9c3'] };
+  const tabName = k => (TABS.find(t => t[0] === k) || [k, k, ''])[1], tabSub = k => (TABS.find(t => t[0] === k) || [k, k, ''])[2];
+  // every bus terminal is its own entry; the other modules are one project each
+  const items = () => [
+    ['Projects', [...terms().map(t => ({ k: 'A', term: t, name: termName(t) || t, sub: 'Daily Settlement · Sales Report · Invoice Summary' })),
+      ...['B', 'C', 'K', 'T', 'M', 'X'].filter(k => TABS.some(t => t[0] === k)).map(k => ({ k, name: k === 'C' ? ((typeof ferryProj === 'function' && ferryProj() || {}).name || 'Ferry') : tabName(k), sub: tabSub(k) }))]],
+    ['Tools', ['E'].filter(k => TABS.some(t => t[0] === k)).map(k => ({ k, name: tabName(k), sub: tabSub(k) }))],
+    ['Settings', ['P', 'L'].filter(k => TABS.some(t => t[0] === k)).map(k => ({ k, name: tabName(k), sub: tabSub(k) }))],
+  ];
+  const isOn = it => S.tab === it.k && (it.k !== 'A' || S.termTab === it.term);
+  // a file belongs to the open project when its module matches (bus terminals: same terminal; its ledger files count too)
+  const mine = f => !f.ok || (f.module === S.tab && (S.tab !== 'A' || !f.term || f.term === S.termTab)) || (S.tab === 'A' && f.module === 'L' && f.term === S.termTab) || (S.tab === 'L' && f.module === 'L');
+  const count = it => (S.files || []).filter(f => f.ok && f.module === it.k && (it.k !== 'A' || !f.term || f.term === it.term)).length;
+
   renderTabs = function () {
-    const n = {}; (S.files || []).forEach(f => { if (f.ok && f.module) n[f.module] = (n[f.module] || 0) + 1; });
-    $('#tabs').innerHTML = TABS.map(([k, nm, sub]) => { const [ic, bg] = ICON[k] || ['📄', '#eef2ff'];
-      return `<button class="${S.tab === k ? 'on' : ''}" data-act="tab" data-v="${k}"><span class="tn"><b>${nm}</b><small>${sub}</small>${n[k] ? `<span class="tb" title="${n[k]} files loaded">${n[k]}</span>` : ''}</span></button>`; }).join('');
-    const d = $('#drop'), st = $('#hstat'), files = S.files || [];
-    if (d) d.classList.toggle('mini', files.length > 0);
-    if (st) { const ok = files.filter(f => f.ok).length, bad = files.length - ok, mods = new Set(files.filter(f => f.ok).map(f => f.module)).size;
-      st.innerHTML = files.length ? `<span><b>${ok}</b> files read</span>${mods ? `<span><b>${mods}</b> modules</span>` : ''}${bad ? `<span style="color:var(--bad)"><b>${bad}</b> not recognised</span>` : ''}` : ''; }
+    if (S.tab === 'A' && !terms().includes(S.termTab)) S.termTab = terms()[0];
+    $('#tabs').innerHTML = items().map(([g, list]) => list.length ? `<div class="grp">${g}</div>` + list.map(it => { const n = count(it);
+      return `<button class="${isOn(it) ? 'on' : ''}" data-act="tab" data-v="${it.k}"${it.term ? ` data-term="${esc(it.term)}"` : ''} title="${esc(it.sub)}"><span class="tn">${esc(it.name)}</span>${n ? `<span class="tb" title="${n} files loaded">${n}</span>` : ''}</button>`; }).join('') : '').join('');
+    const cur = items().flatMap(x => x[1]).find(isOn), ph = $('#ptitle');
+    if (ph) ph.innerHTML = cur ? `<h2>${esc(cur.name)}</h2><span>${esc(cur.sub)}</span>` : '';
+    const d = $('#drop'); if (d) d.classList.toggle('mini', (S.files || []).length > 0);
   };
+  renderChips = function () {
+    const all = (S.files || []).map((f, i) => ({ f, i })), list = S.chipsAll ? all : all.filter(x => mine(x.f)), other = all.length - list.length;
+    const chip = ({ f, i }) => `<span class="chip ${f.ok ? (f.warn ? 'warn' : 'ok') : 'bad'}" title="${esc(f.note || '')}"><i>${f.ok ? (f.warn ? '⚠' : '✓') : '✕'}</i><b>${esc(f.kind)}</b><em>${esc(f.name)}</em>${f.date ? `<u>${esc(f.date)}</u>` : ''}<button data-act="rmchip" data-v="${i}" title="Remove">×</button></span>`;
+    $('#chips').innerHTML = !all.length ? '' : `<div class="fl"><span>${list.length ? `<b>${list.length}</b> file${list.length === 1 ? '' : 's'}${S.chipsAll ? ' loaded' : ' for this project'}` : 'No files for this project yet'}</span>${other || S.chipsAll ? `<button class="lnk" data-ui="chipsall">${S.chipsAll ? 'Show this project only' : `Show all ${all.length} files`}</button>` : ''}</div>` + list.map(chip).join('');
+  };
+  // sidebar click on a terminal: choose the terminal before the tab handler renders
+  document.addEventListener('click', e => {
+    const b = e.target.closest('#tabs button[data-term]'); if (b) S.termTab = b.dataset.term;
+    const c = e.target.closest('[data-ui="chipsall"]'); if (c) { S.chipsAll = !S.chipsAll; renderChips(); }
+  }, true);
+  // the file list follows the open project (the tab / terminal handlers re-render the panel only)
+  document.addEventListener('click', e => { if (e.target.closest('[data-act="tab"],[data-act="term"]')) setTimeout(() => { renderTabs(); renderChips(); }, 0); });
 })();
 
 </script>
