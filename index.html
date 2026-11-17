@@ -281,7 +281,7 @@ function anyDate(v) { if (v instanceof Date) return fromJsDate(v); if (typeof v 
 const colL = n => { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
 
 // extension points for add-on modules (ext/*.js): ingest/report detectors, load hooks, tab renderers, Projek sections, download interceptor
-const EXT = { ingest: [], report: [], load: [], render: {}, projSections: [], save: null };
+const EXT = { ingest: [], report: [], load: [], render: {}, projSections: [], fallback: [], save: null };
 // file names never contain "_" (user rule): underscores → spaces, also for every file inside a ZIP
 const fname = n => String(n).replace(/_+/g, ' ').replace(/ {2,}/g, ' ').replace(/ (\.[A-Za-z0-9]+)$/, '$1').trim();
 async function cleanZip(blob) {
@@ -415,6 +415,24 @@ function tableGrid(t) {
   }
   return { g, kind };
 }
+// CSV / TSV → the same { g, kind } grid shape as a worksheet, so Custom Projects and every report handler can read it
+function csvCell(s) { if (s === '') return ''; const t = s.trim(); if (/^-?\d+(\.\d+)?$/.test(t) && t.length < 16) { const n = Number(t); if (String(n) === t) return n; } return s; }
+function parseCsv(text, sep) {
+  if (!sep) { const l = (text.split(/\r?\n/).find(x => x.trim()) || ''); sep = (l.split('\t').length > l.split(',').length) ? '\t' : ','; }
+  const g = []; let row = [], cur = '', q = false;
+  for (let i = 0; i < text.length; i++) { const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === sep) { row.push(csvCell(cur)); cur = ''; }
+    else if (c === '\r') { /* ignore */ }
+    else if (c === '\n') { row.push(csvCell(cur)); g.push(row); row = []; cur = ''; }
+    else cur += c;
+  }
+  if (cur !== '' || row.length) { row.push(csvCell(cur)); g.push(row); }
+  const W = Math.max(0, ...g.map(r => r.length)); g.forEach(r => { while (r.length < W) r.push(''); });
+  return { g, kind: g.map(r => r.map(() => 'o')) };
+}
+const looksCsv = (name, text) => /\.(csv|tsv|txt)$/i.test(name) || (!/<(table|html|body|tr|td)\b/i.test(text.slice(0, 2000)) && (text.split(/\r?\n/).find(x => x.trim()) || '').split(',').length >= 3);
 function htmlTables(text) {
   const doc = new DOMParser().parseFromString(text, 'text/html');
   const tables = Array.from(doc.querySelectorAll('table')).map(tableGrid);
@@ -556,6 +574,7 @@ async function ingest(file) {
       return ingestReport(file, tables, text, chip);
     }
     const text = new TextDecoder('utf-8').decode(buf);
+    if (looksCsv(file.name, text)) { const t = parseCsv(text); const plain = t.g.map(r => r.join(' ')).join(' '); return ingestReport(file, [t], plain, chip); }
     const { tables, text: plain } = htmlTables(text);
     return ingestReport(file, tables, plain, chip);
   } catch (e) {
@@ -571,7 +590,7 @@ async function ingestReport(file, tables, text, chip) {
     if (title) { const p = createProject('terminal', title); await saveProjects(); term = p.id; chip.newProj = p.id; toast(`New terminal detected — project "${p.name}" (${p.id}) created. Format follows the original template; upload your own template in the Projects tab.`); }
   }
   if (term) ensureTerm(term);
-  if (!term || !type) { chip.kind = 'Not recognised'; chip.note = 'Not a KT/MS, Prolintas or Mersing/TG report'; return chip; }
+  if (!term || !type) { for (const h of EXT.fallback) { const r = await h(file, tables, text, chip); if (r) return r; } chip.kind = 'Not recognised'; chip.note = 'Not a KT/MS, Prolintas or Mersing/TG report'; return chip; }
   chip.term = term; chip.type = type; chip.module = 'A';
   chip.kind = { settle: 'Daily Settlement', sales: 'Sales Report', invoice: 'Invoice Summary' }[type] + ' · ' + term;
   let parsed;
@@ -708,7 +727,8 @@ function undKinds(C) {
 function computeA(term) {
   const P = S.A[term], st = P.settle; if (!st) return null;
   const cfg = S.cfg[term];
-  (st.extraNames || []).forEach(nm => { if (!cfg.adj.some(a => norm(a.name) === norm(nm))) { cfg.adj.push({ name: nm, kind: 'raw' }); DB.set('cfg', S.cfg); } });
+  const colEq = (a, b) => typeof chColMatch === 'function' ? chColMatch(a, b) : norm(a) === norm(b);
+  (st.extraNames || []).forEach(nm => { if (!cfg.adj.some(a => colEq(a.name, nm))) { cfg.adj.push({ name: nm, kind: 'raw' }); DB.set('cfg', S.cfg); } });
   const K = cfg.adj.length;
   P.ov = P.ov || { ded: {}, comp: {}, manual: {} };
   const ov = P.ov, dk = st.dateKey, L = undoDate(S.ledger[term], dk);
@@ -729,7 +749,7 @@ function computeA(term) {
       if (col.kind === 'raw') { r.adj[j] = (r.extra && r.extra[norm(col.name)]) || 0; return; }
       const key = j + '|' + ck; if (seen.has(key)) return;
       if (col.kind === 'comp') {
-        const rec = L.comp.find(c => c.active !== false && coSame(c.company, r.company) && compBalance(c) > 0.004 && (c.col ? norm(c.col) === norm(col.name) : !tagged.has(norm(col.name))));
+        const rec = L.comp.find(c => c.active !== false && coSame(c.company, r.company) && compBalance(c) > 0.004 && (c.col ? colEq(c.col, col.name) : !tagged.has(norm(col.name))));
         if (!rec) return;
         seen.add(key);
         const bal = Math.round(compBalance(rec) * 100), avail = Math.max(r.net + r.under, 0), prop = avail > 0 ? -Math.min(avail, bal) : 0;
@@ -1659,7 +1679,20 @@ const termName = id => (projOf(id) || {}).name || id;
 function ensureTerm(id) {
   S.A[id] = S.A[id] || {};
   S.cfg[id] = S.cfg[id] || { adj: JSON.parse(JSON.stringify(DEF_ADJ[id] || [])) };
+  dedupeAdj(id);
   S.ledger[id] = S.ledger[id] || { entries: [], comp: [] };
+}
+// self-heal stored config: one charge column per month, even if an older save kept a typo'd duplicate ("Octo' 26" + "Oct' 26")
+function dedupeAdj(id) {
+  const cfg = S.cfg[id]; if (!cfg || !Array.isArray(cfg.adj) || typeof chColMatch !== 'function') return;
+  const out = []; let changed = false;
+  cfg.adj.forEach(a => {
+    const h = out.find(b => chColMatch(b.name, a.name));
+    if (!h) { out.push(a); return; }
+    changed = true;
+    if (a.kind === 'comp' || a.kind === 'manual') h.kind = a.kind;   // the computed column wins over a raw template header of the same month
+  });
+  if (changed) { cfg.adj = out; if (typeof DB !== 'undefined') DB.set('cfg', S.cfg); }
 }
 async function saveProjects() { await DB.set('projects', S.projects); }
 const BUILTIN_CANON = {};
@@ -3253,6 +3286,10 @@ function chBlocks(g) {
   return out;
 }
 const chCol = b => b.cat === 'B' ? '' : `${b.cat === 'R' ? 'RFID Charges' : 'Manual Pickup Charges'} ${b.month}`.trim();
+// a charge column is "Manual Pickup Charges <month>" or "RFID Charges <month>" — collapse spelling (OCTO'=OCT') and whitespace so one month = one column
+function chargeKey(name) { const t = String(name || '').toUpperCase(); const rf = /RFID/.test(t), mp = /MANUAL/.test(t) && /PICK/.test(t); if (!rf && !mp) return null; const m = chMonth(name); return (rf ? 'RFID' : 'MANUAL') + '|' + (m ? norm(m) : '?'); }
+// two settlement-column names mean the same column when their text matches, or when both are the same charge kind for the same month
+function chColMatch(a, b) { if (norm(a) === norm(b)) return true; const ka = chargeKey(a); return !!ka && ka === chargeKey(b); }
 function chImport(term, blocks, src) {
   ensureTerm(term); const L = S.ledger[term], cfg = S.cfg[term], alias = cfg.alias || {}, cols = new Map();
   blocks.forEach(b => {
@@ -3268,7 +3305,7 @@ function chImport(term, blocks, src) {
     });
   });
   // a Daily Settlement column for every table that still has a balance
-  cols.forEach((bal, col) => { const a = cfg.adj.find(x => norm(x.name) === norm(col)); if (a) a.kind = 'comp'; else if (bal > 0.004) cfg.adj.push({ name: col, kind: 'comp' }); });
+  cols.forEach((bal, col) => { const a = cfg.adj.find(x => chColMatch(x.name, col)); if (a) a.kind = 'comp'; else if (bal > 0.004) cfg.adj.push({ name: col, kind: 'comp' }); });
   DB.set('ledger', S.ledger); DB.set('cfg', S.cfg);
   return cols;
 }
@@ -3387,6 +3424,25 @@ async function cuIngest(file, tables, chip) {
 }
 EXT.ingest.push((file, wb, names, chip) => CU.list.length ? cuIngest(file, wb.worksheets.map(ws => sheetGrid(ws)), chip) : null);
 EXT.report.push((file, tables, text, chip) => CU.list.length ? cuIngest(file, tables, chip) : null);
+// last resort: any file with a detectable header table (CSV, TSV, HTML, xlsx) still reads — into a generic "Imported file" project the user can then shape
+EXT.fallback.push((file, tables, text, chip) => {
+  let best = null; (tables || []).forEach(tb => { const i = cuGuessHeader(tb.g); if (i >= 0 && !best) best = { tb, i }; });
+  if (!best) return null;
+  const HH = best.tb.g[best.i].map(c => clean(c));
+  const H = HH.filter(Boolean); if (H.length < 2) return null;
+  let P = CU.list.find(p => p.id === 'IMPORT');
+  if (!P) { P = { id: 'IMPORT', name: 'Imported file', headKeys: [], cols: [], footer: false, title: '{NAME}' }; CU.list.push(P); }
+  const sig = H.join('|');
+  if (P.sig !== sig || !P.cols.length) {
+    const sample = best.tb.g[best.i + 1] || [];
+    P.rawH = H; P.headKeys = H.slice(0, Math.min(3, H.length)); P.sig = sig;
+    P.cols = H.map(h => { const v = sample[HH.indexOf(h)]; const isN = typeof v === 'number' || (typeof v === 'string' && num(v) !== null && v.length < 16); return { label: h, src: h, fmt: isN ? 'money' : 'text', total: false }; });
+  }
+  const D = cuParse(P, tables); if (!D || !D.rows.length) return null;
+  CU.data[P.id] = { ...D, file: file.name }; CU.sel = P.id; cuSave();
+  chip.module = 'X'; chip.ok = true; chip.warn = true; chip.kind = 'Imported · ' + P.name; chip.note = `${D.rows.length} rows · open Custom Projects to pick/rename columns`;
+  return chip;
+});
 EXT.load.push(async () => { CU.list = await DB.get('customProjects', null) || []; });
 { const i = TABS.findIndex(t => t[0] === 'P'); TABS.splice(i < 0 ? TABS.length : i, 0, ['X', 'Custom Projects', 'Free-form reports · own format']); }
 
@@ -3440,7 +3496,7 @@ EXT.projSections.push(() => {
   if (P) {
     const opts = ['#', ...(P.rawH || [])];
     h += `<div class="row"><label class="fld">Name<input class="in w" data-act="cuf" data-f="name" value="${esc(P.name)}"></label><label class="fld">Report title<input class="in w" data-act="cuf" data-f="title" value="${esc(P.title || '')}" placeholder="{NAME}"></label><label class="fld">File name<input class="in" data-act="cuf" data-f="fname" value="${esc(P.fname || '{NAME}_{TODAY}')}"></label></div>
-    <div class="row"><label class="fld">Identifying headers (separate with ;)<input class="in w" data-act="cuf" data-f="headKeys" value="${esc((P.headKeys || []).join('; '))}"></label><label class="fld">Raw file name contains (optional)<input class="in" data-act="cuf" data-f="fileHas" value="${esc(P.fileHas || '')}"></label><label class="btn sm">Sample raw (detect headers)<input type="file" accept=".xlsx,.xls,.html,.htm" hidden data-act="curaw"></label></div>
+    <div class="row"><label class="fld">Identifying headers (separate with ;)<input class="in w" data-act="cuf" data-f="headKeys" value="${esc((P.headKeys || []).join('; '))}"></label><label class="fld">Raw file name contains (optional)<input class="in" data-act="cuf" data-f="fileHas" value="${esc(P.fileHas || '')}"></label><label class="btn sm">Sample raw (detect headers)<input type="file" accept=".xlsx,.xls,.html,.htm,.csv,.tsv,.txt" hidden data-act="curaw"></label></div>
     <table class="t dense"><tr><th>Output label</th><th>Source (raw header / # / =formula)</th><th>Format</th><th>TOTAL</th><th></th></tr>
     ${P.cols.map((c, i) => `<tr><td><input class="in" data-act="cuc" data-i="${i}" data-f="label" value="${esc(c.label)}"></td><td><input class="in w" list="cu-src" data-act="cuc" data-i="${i}" data-f="src" value="${esc(c.src)}"></td><td><select class="in" data-act="cuc" data-i="${i}" data-f="fmt">${Object.keys(CU_FMT).map(f => `<option ${c.fmt === f ? 'selected' : ''}>${f}</option>`).join('')}</select></td><td><input type="checkbox" data-act="cuc" data-i="${i}" data-f="total" ${c.total ? 'checked' : ''}></td><td><button class="x" data-act="cucup" data-i="${i}">↑</button><button class="x" data-act="cucdel" data-i="${i}">×</button></td></tr>`).join('')}
     </table><datalist id="cu-src">${opts.map(o => `<option value="${esc(o)}">`).join('')}</datalist>
@@ -3466,7 +3522,7 @@ document.addEventListener('change', async e => {
   if (t.dataset.act === 'cuc') { const c = P.cols[+t.dataset.i]; c[t.dataset.f] = t.type === 'checkbox' ? t.checked : t.value; await cuSave(); if (t.type !== 'text') renderAll(); }
   if (t.dataset.act === 'curaw' && t.files[0]) {
     const f = t.files[0], buf = await f.arrayBuffer(), u = new Uint8Array(buf.slice(0, 2)); let tables;
-    if (u[0] === 0x50 && u[1] === 0x4b) tables = (await loadXlsx(buf)).worksheets.map(ws => sheetGrid(ws)); else tables = htmlTables(new TextDecoder('utf-8').decode(buf)).tables;
+    if (u[0] === 0x50 && u[1] === 0x4b) tables = (await loadXlsx(buf)).worksheets.map(ws => sheetGrid(ws)); else { const txt = new TextDecoder('utf-8').decode(buf); tables = looksCsv(f.name, txt) ? [parseCsv(txt)] : htmlTables(txt).tables; }
     let best = null; tables.forEach(tb => { const i = cuGuessHeader(tb.g); if (i >= 0 && (!best)) best = { tb, i }; });
     if (!best) { toast('Header not found in this file', 'bad'); t.value = ''; return; }
     const H = best.tb.g[best.i].map(clean).filter(Boolean), sample = best.tb.g[best.i + 1] || [];
@@ -5194,7 +5250,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v40';
+  const VER = 'v41';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5253,7 +5309,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v40';
+const SE_VER = 'v41';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
