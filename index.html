@@ -3446,7 +3446,81 @@ EXT.fallback.push((file, tables, text, chip) => {
 EXT.load.push(async () => { CU.list = await DB.get('customProjects', null) || []; });
 { const i = TABS.findIndex(t => t[0] === 'P'); TABS.splice(i < 0 ? TABS.length : i, 0, ['X', 'Custom Projects', 'Free-form reports · own format']); }
 
+/* ---------- Sample template: the user's own output file, filled with the mapped data (keeps its title, header, styling, totals and signatures) ---------- */
+function cuB64enc(buf) { let s = ''; const b = new Uint8Array(buf), CH = 0x8000; for (let i = 0; i < b.length; i += CH) s += String.fromCharCode.apply(null, b.subarray(i, i + CH)); return btoa(s); }
+function cuB64dec(s) { const bin = atob(s), b = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i); return b.buffer; }
+const cuTxt = v => { if (v == null) return ''; if (typeof v === 'object') return clean(v.text || v.result || (v.richText ? v.richText.map(t => t.text).join('') : '')); return clean(v); };
+// a template's body can be blank, so find the header as the widest row of text labels (not the title, not the TOTAL row)
+function cuHeaderRow(g) {
+  let best = -1, bestN = 1;
+  for (let i = 0; i < Math.min(g.length, 50); i++) {
+    const cells = g[i].map(x => clean(x)), nonEmpty = cells.filter(Boolean).length, textN = cells.filter(x => x && num(x) === null).length;
+    if (nonEmpty >= 2 && textN >= Math.ceil(nonEmpty / 2) && nonEmpty > bestN) { bestN = nonEmpty; best = i; }
+  }
+  return best;
+}
+// find the data table inside a template worksheet: header row (1-based), its columns, and where the body ends (first TOTAL / signature row)
+function cuTplScan(ws) {
+  const g = sheetGrid(ws).g, hr = cuHeaderRow(g); if (hr < 0) return null;
+  const cols = []; g[hr].forEach((v, c) => { const t = clean(v); if (t) cols.push({ col: c + 1, label: t }); });
+  if (cols.length < 2) return null;
+  const isTotal = r => (g[r] || []).some(v => /^(grand\s*)?total\b/i.test(clean(v))), isFoot = r => (g[r] || []).some(v => /\b(PREPARED|CHECKED|APPROVED|VERIFIED|DISEDIAKAN|DISEMAK|DILULUSKAN)\b/i.test(clean(v)));
+  let below = g.length; for (let r = hr + 1; r < g.length; r++) { if (isTotal(r) || isFoot(r)) { below = r; break; } }
+  const totalCols = [];
+  if (below < g.length && isTotal(below)) cols.forEach(c => { const v = ws.getCell(below + 1, c.col).value; if (typeof v === 'number' || (v && typeof v === 'object' && (v.formula || v.sharedFormula)) || (typeof v === 'string' && num(v) !== null)) totalCols.push(c.label); });
+  return { headerRow: hr + 1, cols, belowStart: below + 1, totalCols };
+}
+async function cuTemplate(P, buf, name) {
+  const wb = await loadXlsx(buf); let ws = null, sc = null;
+  for (const w of wb.worksheets) { if (w.state === 'hidden' || w.state === 'veryHidden') continue; const s = cuTplScan(w); if (s) { ws = w; sc = s; break; } }
+  if (!sc) return 'No data table (header row) found in the template.';
+  P.tpl = { buf: cuB64enc(buf), name, sheet: ws.name, headerRow: sc.headerRow, firstCol: sc.cols[0].col, cols: sc.cols };
+  const a1 = cuTxt(ws.getCell(1, sc.cols[0].col > 1 ? 1 : 1).value); if (a1 && !/^\s*$/.test(a1)) P.title = a1;
+  // the template's headers define the output columns; keep the user's existing src mapping where the label still matches
+  const prev = {}; (P.cols || []).forEach(c => prev[cuLow(c.label)] = c);
+  const rawH = P.rawH || [], guess = lbl => rawH.find(h => cuLow(h) === cuLow(lbl)) || rawH.find(h => cuLow(h).includes(cuLow(lbl)) || cuLow(lbl).includes(cuLow(h))) || '';
+  P.cols = sc.cols.map(({ col, label }) => { const old = prev[cuLow(label)]; const dv = ws.getCell(sc.headerRow + 1, col); const nf = dv && dv.numFmt || ''; const fmt = old ? old.fmt : /%/.test(nf) ? 'pct' : /0|#/.test(nf) ? 'money' : /yy|dd|mm/i.test(nf) ? 'date' : 'text'; return { label, src: old ? old.src : guess(label) || label, fmt, total: sc.totalCols.includes(label) }; });
+  P.footer = false;   // the template already carries its own PREPARED / CHECKED / APPROVED
+  return null;
+}
+async function cuGenTpl(P) {
+  const D = CU.data[P.id], R = cuRows(P, D), buf = cuB64dec(P.tpl.buf), wb = await loadXlsx(buf);
+  const ws = wb.getWorksheet(P.tpl.sheet) || wb.worksheets[0], sc = cuTplScan(ws) || { headerRow: P.tpl.headerRow, cols: P.tpl.cols, belowStart: P.tpl.headerRow + 1 };
+  const hr = sc.headerRow, dataStart = hr + 1, colOfLabel = {}; sc.cols.forEach(c => colOfLabel[cuLow(c.label)] = c.col);
+  const colFor = (c, k) => colOfLabel[cuLow(c.label)] || (sc.cols[k] && sc.cols[k].col) || (P.tpl.firstCol + k);
+  const clone = st => JSON.parse(JSON.stringify(st || {}));
+  const rowStyle = sc.cols.map(c => clone(ws.getCell(dataStart, c.col).style));          // the template's own cell styling for a data row
+  const bodyEnd = Math.max(dataStart, sc.belowStart - 1), oldBodyRows = bodyEnd - dataStart + 1;
+  // capture the TOTAL / signature block below the table, to re-place after the data (overwrite in place, never shift formulas blindly)
+  const after = []; const last = ws.rowCount;
+  for (let r = sc.belowStart; r <= last; r++) { const vals = [], sts = []; for (let c = 1; c <= (ws.columnCount || P.tpl.firstCol + sc.cols.length); c++) { vals.push(ws.getCell(r, c).value); sts.push(clone(ws.getCell(r, c).style)); } after.push({ vals, sts, h: ws.getRow(r).height }); }
+  const n = R.length, newBodyEnd = dataStart + n - 1, oldEnd = bodyEnd;
+  const colOf = {}; P.cols.forEach((c, k) => colOf[c.label] = colL(colFor(c, k)));
+  // write the data rows
+  R.forEach((o, i) => {
+    const r = dataStart + i;
+    P.cols.forEach((c, k) => {
+      const cn = colFor(c, k), cell = ws.getCell(r, cn); let v = o[c.label];
+      if (/^=/.test(c.src)) { const refs = [...c.src.matchAll(/\[([^\]]+)\]/g)].map(m => m[1]); if (refs.every(f => colOf[f])) v = { formula: c.src.slice(1).replace(/\[([^\]]+)\]/g, (m, f) => colOf[f] + r), result: v }; }
+      cell.value = (v === '' || v == null) ? null : v; cell.style = clone(rowStyle[sc.cols.findIndex(x => x.col === cn)] || rowStyle[k] || {});
+    });
+  });
+  // re-place the TOTAL / signature block right under the new last data row, rewriting SUM ranges that ended at the old body end
+  const fixF = f => f.replace(/(\$?[A-Z]{1,3}\$?)(\d+)/g, (m, col, d) => (+d === oldEnd ? col + newBodyEnd : m));
+  let ar = newBodyEnd + 1;
+  after.forEach(row => {
+    for (let c = 1; c <= row.vals.length; c++) { const cell = ws.getCell(ar, c); let v = row.vals[c - 1];
+      if (v && typeof v === 'object' && (v.formula || v.sharedFormula)) v = { formula: fixF(v.formula || ''), result: v.result };
+      cell.value = v == null ? null : v; cell.style = row.sts[c - 1]; }
+    if (row.h) ws.getRow(ar).height = row.h; ar++;
+  });
+  // clear any leftover rows from a longer template body
+  for (let r = ar; r <= Math.max(last, oldEnd + after.length) + 2; r++) { const row = ws.getRow(r); for (let c = 1; c <= row.cellCount; c++) if (r > newBodyEnd) { /* keep */ } }
+  if (oldBodyRows > n) for (let r = ar; r <= last; r++) { const row = ws.getRow(r); row.eachCell(cell => { cell.value = null; }); }
+  const out = await wb.xlsx.writeBuffer(); return new Blob([out], { type: XLSX_MIME });
+}
 async function cuGen(P) {
+  if (P.tpl && P.tpl.buf) return cuGenTpl(P);
   const D = CU.data[P.id], R = cuRows(P, D), wb = new ExcelJS.Workbook(), ws = wb.addWorksheet((P.code || P.name).slice(0, 31));
   const n = P.cols.length, B = { style: 'thin' }, BOX = { top: B, left: B, bottom: B, right: B }, L = k => colL(k + 1);
   ws.getCell('A1').value = (P.title || P.name).replace('{NAME}', P.name); ws.getCell('A1').font = { bold: true, size: 14 };
@@ -3496,7 +3570,8 @@ EXT.projSections.push(() => {
   if (P) {
     const opts = ['#', ...(P.rawH || [])];
     h += `<div class="row"><label class="fld">Name<input class="in w" data-act="cuf" data-f="name" value="${esc(P.name)}"></label><label class="fld">Report title<input class="in w" data-act="cuf" data-f="title" value="${esc(P.title || '')}" placeholder="{NAME}"></label><label class="fld">File name<input class="in" data-act="cuf" data-f="fname" value="${esc(P.fname || '{NAME}_{TODAY}')}"></label></div>
-    <div class="row"><label class="fld">Identifying headers (separate with ;)<input class="in w" data-act="cuf" data-f="headKeys" value="${esc((P.headKeys || []).join('; '))}"></label><label class="fld">Raw file name contains (optional)<input class="in" data-act="cuf" data-f="fileHas" value="${esc(P.fileHas || '')}"></label><label class="btn sm">Sample raw (detect headers)<input type="file" accept=".xlsx,.xls,.html,.htm,.csv,.tsv,.txt" hidden data-act="curaw"></label></div>
+    <div class="row"><label class="fld">Identifying headers (separate with ;)<input class="in w" data-act="cuf" data-f="headKeys" value="${esc((P.headKeys || []).join('; '))}"></label><label class="fld">Raw file name contains (optional)<input class="in" data-act="cuf" data-f="fileHas" value="${esc(P.fileHas || '')}"></label></div>
+    <div class="row" style="align-items:center;gap:10px"><label class="btn sm">1 · Sample raw (your data file)<input type="file" accept=".xlsx,.xls,.html,.htm,.csv,.tsv,.txt" hidden data-act="curaw"></label><label class="btn sm">2 · Sample template (your output file)<input type="file" accept=".xlsx" hidden data-act="cutpl"></label>${P.tpl ? `<span class="pill okp">Template: ${esc(P.tpl.name)} ✓</span><button class="x" data-act="cutplclr" title="Remove template">×</button>` : `<span class="hint">Optional: drop your own Excel layout — the data fills it (title, headers, totals, signatures kept). Without one, a plain table is built.</span>`}</div>
     <table class="t dense"><tr><th>Output label</th><th>Source (raw header / # / =formula)</th><th>Format</th><th>TOTAL</th><th></th></tr>
     ${P.cols.map((c, i) => `<tr><td><input class="in" data-act="cuc" data-i="${i}" data-f="label" value="${esc(c.label)}"></td><td><input class="in w" list="cu-src" data-act="cuc" data-i="${i}" data-f="src" value="${esc(c.src)}"></td><td><select class="in" data-act="cuc" data-i="${i}" data-f="fmt">${Object.keys(CU_FMT).map(f => `<option ${c.fmt === f ? 'selected' : ''}>${f}</option>`).join('')}</select></td><td><input type="checkbox" data-act="cuc" data-i="${i}" data-f="total" ${c.total ? 'checked' : ''}></td><td><button class="x" data-act="cucup" data-i="${i}">↑</button><button class="x" data-act="cucdel" data-i="${i}">×</button></td></tr>`).join('')}
     </table><datalist id="cu-src">${opts.map(o => `<option value="${esc(o)}">`).join('')}</datalist>
@@ -3514,6 +3589,7 @@ document.addEventListener('click', async e => {
   else if (a === 'cucadd') { P.cols.push({ label: 'Column ' + (P.cols.length + 1), src: '', fmt: 'money', total: false }); await cuSave(); renderAll(); }
   else if (a === 'cucdel') { P.cols.splice(+b.dataset.i, 1); await cuSave(); renderAll(); }
   else if (a === 'cucup') { const i = +b.dataset.i; if (i) { [P.cols[i - 1], P.cols[i]] = [P.cols[i], P.cols[i - 1]]; await cuSave(); renderAll(); } }
+  else if (a === 'cutplclr') { delete P.tpl; P.footer = true; await cuSave(); renderAll(); }
   else if (a === 'cudel') { if (!confirm(`Delete custom project "${P.name}"?`)) return; CU.list = CU.list.filter(p => p !== P); delete CU.data[P.id]; CU.edit = null; await cuSave(); renderAll(); }
 });
 document.addEventListener('change', async e => {
@@ -3529,6 +3605,13 @@ document.addEventListener('change', async e => {
     P.rawH = H; P.headKeys = H.slice(0, 3);
     if (!P.cols.length) P.cols = H.map((h, k) => { const v = best.tb.g[best.i + 1][best.tb.g[best.i].map(clean).indexOf(h)]; const isN = typeof v === 'number' || (typeof v === 'string' && num(v) !== null && !/^\d{1,2}\/\d{1,2}\/\d{4}/.test(v)); const isD = v instanceof Date || (typeof v === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}/.test(v)); return { label: h, src: h, fmt: isD ? 'date' : isN ? 'money' : 'text', total: false }; });
     await cuSave(); toast(`${H.length} columns detected — choose output columns and mark TOTAL`); t.value = ''; renderAll();
+  }
+  if (t.dataset.act === 'cutpl' && t.files[0]) {
+    const f = t.files[0], buf = await f.arrayBuffer(), u = new Uint8Array(buf.slice(0, 2));
+    if (!(u[0] === 0x50 && u[1] === 0x4b)) { toast('Please upload an .xlsx template (your own output file)', 'bad'); t.value = ''; return; }
+    const err = await cuTemplate(P, buf, f.name);
+    if (err) { toast(err, 'bad'); t.value = ''; return; }
+    await cuSave(); toast(`Template "${f.name}" loaded — the data now fills it. Map each column to your raw header below.`); t.value = ''; renderAll();
   }
 });
 
@@ -5250,7 +5333,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v41';
+  const VER = 'v42';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5309,7 +5392,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v41';
+const SE_VER = 'v42';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
