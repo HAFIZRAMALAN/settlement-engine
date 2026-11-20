@@ -4357,7 +4357,7 @@ async function mlOpen(list) {
     return;
   }
   for (const e of list) { saveBlobRaw(mlFile(e), mlEml(e)); if (list.length > 1) await new Promise(r => setTimeout(r, 500)); }
-  toast('Outlook Helper is not running — downloaded instead. To go straight into Outlook: double-click OUTLOOK HELPER on the Desktop once, then press the button again.', 'bad');
+  toast('Could not reach the Outlook Helper — downloaded instead. 1) Double-click OUTLOOK HELPER on the Desktop once. 2) If the browser asks to allow access to apps / devices on this computer (local network), press Allow. Then press the button again.', 'bad');
 }
 
 /* ---- dropped files ---- */
@@ -4484,7 +4484,7 @@ function mlSettings() {
 }
 EXT.render.Q = function () {
   mlCfg(); const pg = ML.page = S.qMail && (ML_PAGES[S.qMail] || S.qMail === 'SET') ? S.qMail : 'OPPAY';
-  const hs = () => mlHelperOn().then(ok => document.querySelectorAll('.ml-hs').forEach(x => { x.textContent = ok ? 'Outlook Helper running ✓ — the button goes straight into Outlook' : 'Outlook Helper not running — double-click OUTLOOK HELPER on the Desktop'; x.className = 'ml-hs pill ' + (ok ? 'ok' : 'bad'); }));
+  const hs = () => mlHelperOn().then(ok => document.querySelectorAll('.ml-hs').forEach(x => { x.textContent = ok ? 'Outlook Helper running ✓ — the button goes straight into Outlook' : 'Outlook Helper not reached — double-click OUTLOOK HELPER on the Desktop; if the browser asks to allow access to apps on this device, press Allow'; x.className = 'ml-hs pill ' + (ok ? 'ok' : 'bad'); }));
   if (pg === 'SET') { panel().innerHTML = mlSettings(); hs(); return; }
   const ids = ML_PAGES[pg], id = ML.tsel[pg] = ids.includes(ML.tsel[pg]) ? ML.tsel[pg] : ids[0], t = mlT(id), E = mlEmails(id);
   let h = '';
