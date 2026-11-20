@@ -3248,6 +3248,404 @@ async function loadState() {
 (async function boot() { await tick(); await loadState(); for (const f of EXT.load) await f(); renderAll(); })();
 
 
+/* ===== ext: cashbook.js ===== */
+/* ====================== IMPORT CASHBOOK — AutoCount Payment Vouchers (PV) from the settlements ======================
+   Every rule below was taken from the team's own posted vouchers (Import CashBook - Nurhafiz.xlsx + AutoCount screens):
+   - accounts / project codes / payees / payment method per project (history of MSM2TPV, M1TPV, M3TPV sheets)
+   - one PV per settlement period; days of the previous month go net to the project's TEMPORARY CONTROL account
+     (MSM2TPV01/2611, M1TPV01/03/04/2611, M3TPV01/2611), days of the current month are posted gross with their charges
+   - PaymentAmt = SUM of the lines = TOTAL BANK IN of the settlement (checked on every voucher)
+   Read-only: nothing here changes a settlement, the ledger or any other project. */
+const PV_COLS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG', 'AH', 'AI', 'AJ', 'AK', 'AL', 'AM', 'AN', 'AO', 'AP', 'AQ'];
+// header rows 1–3 exactly as in the team's Import CashBook file (AutoCount maps the columns by row 3)
+const PV_HDR = {
+  r1: { B: 'Master Column', M: 'Cash Book Detail', AE: 'Payment Detail Column' },
+  r2: { B: '(20 chars)', C: '(Date: dd/MM/yyyy)', D: '(2 chars, PV for Payment Voucher, OR for Receipt Voucher)', E: '(80 chars)', F: '(100 chars)', G: '(5 chars)', H: '(Number, use System Currency Rate Decimal)', J: '(Rich Text)', K: '(Boolean: T or F)', M: '(12 chars)', N: '(Number, use System Currency Rate Decimal)', O: '(10 chars)', P: '(10 chars)', Q: '(8 chars)', R: '(100 chars)', S: '(Rich Text)', T: '(12 chars)', U: '(25 chars)', V: '(80 chars)', W: '(30 chars)', X: '(20 chars)', Y: '(50 chars)', Z: '(Number, use System Currency Decimal)', AA: '(Number, use System Currency Decimal)', AB: '(Number, use System Currency Decimal)', AC: '(Number, use System Currency Decimal)', AD: '(Number, use System Currency Decimal)', AE: '(20 chars)', AF: '(20 chars)', AG: '(Number, use System Currency Decimal)', AH: '(Number, use System Currency Decimal)', AI: '(Number, use System Currency Rate Decimal)', AJ: '(14 chars)', AK: '(30 chars)', AL: '(10 chars)', AM: '(10 chars)', AN: '(20 chars)', AO: '(Integer)', AP: '(Boolean. Indicate T for Returned Cheque or F otherwise)', AQ: '(Returned Cheque Date: dd/MM/yyyy)' },
+  r3: { A: 'Bold column are mandate fields.', B: 'DocNo', C: 'DocDate', D: 'DocType', E: 'DealWith', F: 'Description', G: 'CurrencyCode', H: 'CurrencyRate', I: 'ToTaxCurrencyRate', J: 'Note', K: 'InclusiveTax', L: 1, M: 'AccNo', N: 'ToAccountRate', O: 'ProjNo', P: 'DeptNo', Q: 'TaxType', R: 'DetailDescription', S: 'FurtherDescription', T: 'SalesAgent', U: 'TaxBRNo', V: 'TaxBName', W: 'TaxRefNo', X: 'TaxPermitNo', Y: 'TaxExportCountry', Z: 'Amount', AA: 'TaxableAmt', AB: 'TaxAdjustment', AC: 'Tax', AD: 'RCHQAmount', AE: 'PaymentMethod', AF: 'ChequeNo', AG: 'PaymentAmt', AH: 'BankCharge', AI: 'ToBankRate', AJ: 'BankChargeTaxType', AK: 'BankChargeTaxRefNo', AL: 'BankChargeProjNo', AM: 'BankChargeDeptNo', AN: 'PaymentBy', AO: 'FloatDay', AP: 'IsRCHQ', AQ: 'RCHQDate' },
+  bold: ['A', 'B', 'C', 'D', 'G', 'M', 'Z', 'AE'],
+  w: { A: 11.09, B: 15, C: 11, D: 8, E: 30, F: 30, G: 9, H: 9, I: 9, J: 6, K: 8, L: 1.45, M: 10, N: 8, O: 11, P: 6, Q: 6, R: 52, S: 6, T: 6, Y: 6, Z: 13, AE: 20, AF: 8, AG: 13, AH: 10, AI: 8, AN: 10, AO: 8, AP: 8, AQ: 8 }
+};
+// defaults taken from the posted vouchers; every field can be changed in Import Cashbook → Codes
+const PV_DEF = {
+  MS: { label: 'Melaka Sentral', series: 'MSM2TPV', payee: 'MELAKA SENTRAL SDN BHD', proj: 'M.SENTRAL', acc: '325-MS01', contra: '326-MS01', temp: '325-TM01', pm: 'MBB2 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'MELAKA SENTRAL', contraD: 'CONTRA ACCOUNT [MS]', tempD: 'TEMPORARY CONTROL ACCOUNT [MS]' },
+  KT: { label: 'Kuala Terengganu', series: 'M1TPV', payee: 'KUALA TERENGGANU', proj: 'KT', acc: '325-KT01', contra: '326-KT01', temp: '325-TM05', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'KUALA TERENGGANU', contraD: 'CONTRA ACCOUNT [KT]', tempD: 'TEMPORARY CONTROL ACCOUNT [KT]' },
+  LKSA: { label: 'Prolintas LKSA', series: 'M1TPV', payee: 'PROJEK LINTASAN SHAH ALAM SDN. BHD. (LKSA)', proj: 'P-LKSA', acc: '325-P001', contra: '326-P001', temp: '325-TM12', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'LKSA', contraD: 'CONTRA ACCOUNT [PROLINTAS]', tempD: 'TEMPORARY CONTROL ACCOUNT [LKSA]' },
+  SILK: { label: 'Prolintas SILK', series: 'M1TPV', payee: 'SISTEM LINGKARAN-LEBUHRAYA KAJANG SDN.BHD. (SILK)', proj: 'P-SILK', acc: '325-P002', contra: '326-P001', temp: '325-TM11', pm: 'MBB1 - IBG', by: 'IBG', bc: 0.5, float: 2, accD: 'SILK', contraD: 'CONTRA ACCOUNT [PROLINTAS]', tempD: 'TEMPORARY CONTROL ACCOUNT [SILK]' },
+  KLIA: { label: 'KLIA TQMS', series: 'M3TPV', payee: '', proj: 'KLIA1-TQMS', acc: '325-KA02', contra: '326-KT02', loan: '405-G001', temp: '325-TM13', pm: 'MBB (2674) - SHAFTSB', by: 'TRANSFER', bc: 0, float: 2, accD: 'KLIA', contraD: 'CONTRA ACCOUNT [KLIA]', tempD: 'TEMPORARY CONTROL ACCOUNT [KLIA]', loanD: 'LOAN SETTLEMENT' },
+  // Mersing: payee + project from the AutoCount screen (M1TPV67/2611); its account codes are not in the Import CashBook file — fill them in Codes
+  MERSING: { label: 'Ferry Mersing', series: 'M1TPV', payee: 'BISTARI GEMILANG TRAVEL SDN BHD (MERSING)', proj: 'MERSING', acc: '', contra: '', temp: '', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'MERSING', contraD: 'CONTRA ACCOUNT [MERSING]', tempD: 'TEMPORARY CONTROL ACCOUNT [MERSING]' },
+  'TANJUNG GEMOK': { label: 'Ferry Tanjung Gemok', series: 'M1TPV', payee: '', proj: '', acc: '', contra: '', temp: '', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'TANJUNG GEMOK', contraD: 'CONTRA ACCOUNT [TANJUNG GEMOK]', tempD: 'TEMPORARY CONTROL ACCOUNT [TANJUNG GEMOK]' },
+  TBS: { label: 'TBS (Maju TMAS)', series: 'M1TPV', payee: 'MAJU TMAS SDN BHD', proj: 'TBS', acc: '325-TB01', contra: '326-TB01', temp: '325-TM09', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'TBS', contraD: 'CONTRA ACCOUNT [TBS]', tempD: 'TEMPORARY CONTROL ACCOUNT [TBS]' }
+};
+// KLIA operator code in the report → AutoCount payee (M3TPV history)
+const PV_KOPS = { ALM: 'ALM RESOURCES SDN BHD', EFXTRANSPORT: 'EFX TRAVEL & TOURS SDN BHD', GAPTEK: 'GAPTEK TRAVEL & TOUR SDN BHD', GEMBIRACESB: 'CITY EXECUTIVE TAXICABS SDN BHD', GEMBIRASAING: 'SAING ENTERPRISE SDN BHD', KLASSSERVIS: 'KLASS SERVIS (M) SDN BHD', PUJANGGA: 'PUJANGGA MOTOR SDN BHD', SUNLIGHT: 'SUNLIGHT TAXI SDN BHD', YEWNITED: 'YEWNITED PARTNERS SDN BHD' };
+const PV_ORDER = ['MS', 'LKSA', 'SILK', 'KT', 'MERSING', 'TANJUNG GEMOK', 'TBS', 'KLIA'];   // M1TPV64-68/2611: LKSA, SILK, KT, MERSING, TBS
+const PV_MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+const PV = { bus: {}, pro: {}, klia: {}, cfg: null, ed: {}, sel: 'ALL', last: {}, cbFile: null };
+
+const pvMk = o => o.y * 100 + o.m;
+const pvNext = o => { const d = toUTC(o); d.setUTCDate(d.getUTCDate() + 1); return fromJsDate(d); };
+const pvYYMM = o => `${String(o.y).slice(2)}${pad(o.m)}`;
+const pvMonLbl = o => `${PV_MON[o.m - 1]}' ${String(o.y).slice(2)}`;
+function pvCfg() {
+  if (!PV.cfg) PV.cfg = { p: {}, kops: {}, next: {} };
+  const c = PV.cfg; Object.keys(PV_DEF).forEach(k => { c.p[k] = { ...PV_DEF[k], ...(c.p[k] || {}) }; });
+  c.kops = { ...PV_KOPS, ...(c.kops || {}) }; c.next = c.next || {};
+  return c;
+}
+const pvP = k => pvCfg().p[k] || PV_DEF[k];
+const pvSave = () => { try { DB.set('pvCfg', PV.cfg); } catch (e) { } };
+// "Manual Pickup Charges OCTO' 26" → "MANUAL PICK UP CHARGES OCT' 26" (spelling as in the posted vouchers, month normalised)
+function pvChargeName(name) {
+  const m = typeof chMonth === 'function' ? chMonth(name) : '';
+  let base = String(name || '').replace(/\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\W{0,3}(\d{4}|\d{2})\b/i, '').trim();
+  base = base.toUpperCase().replace(/PICKUP/g, 'PICK UP').replace(/\s+/g, ' ').trim();
+  return (base + (m ? ' ' + m.toUpperCase() : '')).trim();
+}
+
+/* ---------------- readers: completed files ---------------- */
+const pvTxt = v => v == null ? '' : v instanceof Date ? dmyStr(fromJsDate(v)) : clean(typeof v === 'object' ? (v.text || v.result || '') : v);
+// DAILY SETTLEMENT KT / MS (the finished file, as signed off)
+function pvReadBus(wb, fileName) {
+  const ws = wb.worksheets[0], g = sheetGrid(ws).g;
+  const hr = g.findIndex(r => r.some(x => pvTxt(x) === 'Sales Report')); if (hr < 0) return null;
+  const H = g[hr].map(pvTxt), ix = n => H.indexOf(n);
+  const iNo = ix('No.'), iD = ix('Date'), iC = ix('Company'), iS = ix('Sales Report'), iT = ix('Terminal Charges'), iP = ix('Pickup Charges'), iK = ix('Parking Charges'), iU = ix('Undersales'), iF = ix('Final');
+  if ([iD, iC, iS, iT, iU, iF].some(i => i < 0)) return null;
+  const adjI = []; for (let j = (iK >= 0 ? iK : iP) + 1; j < iU; j++) if (H[j]) adjI.push(j);
+  const rows = [];
+  for (let r = hr + 1; r < g.length; r++) {
+    const x = g[r], d = x[iD] instanceof Date ? fromJsDate(x[iD]) : anyDate(x[iD]);
+    if (!d || typeof x[iNo] !== 'number' || !pvTxt(x[iC])) continue;
+    rows.push({ date: d, co: pvTxt(x[iC]), sales: cents(x[iS]), term: cents(x[iT]), pick: iP >= 0 ? cents(x[iP]) : 0, park: iK >= 0 ? cents(x[iK]) : 0, adj: adjI.map(j => cents(x[j])), under: cents(x[iU]), final: cents(x[iF]) });
+  }
+  if (!rows.length) return null;
+  const title = pvTxt(g[0] && g[0].find(v => pvTxt(v))) || '';
+  const term = /MELAKA/i.test(title) || /\bMS\b/i.test(fileName) ? 'MS' : /TERENGGANU/i.test(title) || /\bKT\b/i.test(fileName) ? 'KT' : null;
+  if (!term) return null;
+  // remarks: "UNDERSALES <range>" (new, + to the payee), "UNDERSALES (-)" (old, recovered), "TOTAL BANK IN"
+  const find = (re, from = hr) => { for (let r = from; r < g.length; r++) for (let c = 0; c < Math.min(6, g[r].length); c++) if (re.test(pvTxt(g[r][c]))) return { r, c }; return null; };
+  const nb = find(/^UNDERSALES \d/), ob = find(/^UNDERSALES \(-\)/), tb = find(/^TOTAL BANK IN$/), pb = find(/^PREPARED BY/);
+  const box = (a, b) => { const out = []; if (!a) return out; for (let r = a.r + 1; r < (b ? b.r : g.length); r++) { const co = pvTxt(g[r][a.c]), v = g[r][a.c + 2]; if (!co || /^FINAL$/i.test(co) || typeof v !== 'number') continue; out.push({ co, dt: pvTxt(g[r][a.c + 1]), amt: cents(v) }); } return out; };
+  const newU = box(nb, tb || ob).filter(u => u.amt), oldU = box(ob, pb).filter(u => u.amt);
+  const bankC = tb ? cents(g[tb.r][tb.c + 2]) : null;
+  const ds = rows.map(r => r.date).sort((a, b) => dKey(a) - dKey(b));
+  return { kind: 'bus', term, file: fileName, from: ds[0], to: ds[ds.length - 1], rows, adjNames: adjI.map(j => H[j]), newU, oldU, bankC };
+}
+// SETTLEMENT PROLINTAS SILK / LKSA <date> (one day per file; Summary = Amount / Payout / Commission per scheme)
+function pvReadPro(wb, fileName) {
+  const ws = wb.getWorksheet('Summary'), wd = wb.getWorksheet('Detail'); if (!ws) return null;
+  const t = (wd ? pvTxt(wd.getCell('B2').value) : '') + ' ' + fileName, hw = /SILK/i.test(t) ? 'SILK' : /LKSA/i.test(t) ? 'LKSA' : null; if (!hw) return null;
+  const g = sheetGrid(ws).g, H = (g[0] || []).map(pvTxt), iD = H.indexOf('Settle Date'), iA = H.indexOf('Amount'), iP = H.indexOf('Payout'), iC = H.indexOf('Commission');
+  if ([iD, iA, iP, iC].some(i => i < 0)) return null;
+  let date = null, amtC = 0, payC = 0, commC = 0;
+  g.slice(1).forEach(r => { if (r[iA] == null || r[iA] === '') return; date = date || anyDate(r[iD] instanceof Date ? r[iD] : String(r[iD])); amtC += cents(r[iA]); payC += cents(r[iP]); commC += cents(r[iC]); });
+  if (!date) return null;
+  return { kind: 'pro', hw, file: fileName, date, amtC, payC, commC };
+}
+// OPERATOR SETTLEMENT REPORT (<op>) <date> complete.xlsx (KLIA)
+function pvKDate(s) { const m = /(\d{1,2})\s+([A-Za-z]{3})[a-z]*\s+(\d{4})/.exec(String(s || '')); if (!m) return null; const mo = PV_MON.indexOf(m[2].toUpperCase()) + 1; return mo ? { y: +m[3], m: mo, d: +m[1] } : null; }
+function pvReadKlia(wb, fileName) {
+  const ws = wb.worksheets[0]; if (!ws || !/^OperatorSettlement/.test(ws.name)) return null;
+  const g = sheetGrid(ws).g, all = g.map(r => r.map(pvTxt));
+  if (!all.some(r => r.some(x => /^PREPARED BY/i.test(x)))) return null;   // only the finished ("complete") report
+  const code = all[1] && all[1][3], per = all[2] && all[2][3]; if (!code || !per) return null;
+  const pr = per.split(/\s+-\s+/), a = pvKDate(pr[0]), b0 = pvKDate(pr[1]); if (!a) return null;
+  let to = b0 || a; if (b0 && /12:00:00\s*AM/i.test(pr[1]) && dKey(b0) > dKey(a)) { const d = toUTC(b0); d.setUTCDate(d.getUTCDate() - 1); to = fromJsDate(d); }
+  const days = {}, day = d => days[dKey(d)] = days[dKey(d)] || { date: d, sC: 0, pC: 0, inbC: 0 };
+  let iN = -1, iP = -1, iS = -1, sec = null, loanC = 0, bankC = null, detTot = null, inbTot = null;
+  for (let r = 0; r < g.length; r++) {
+    const R = all[r];
+    if (/^Operator Settlement Report \(Inbound\)/i.test(R[0])) { sec = 'pre-inb'; continue; }
+    if (R.includes('Booking No.')) { iN = R.indexOf('Fare Price (RM)'); iS = R.indexOf('Payable Amount (RM)'); const sub = all[r + 1] || []; iP = sub.indexOf('Amount (RM)'); sec = sec === 'pre-inb' ? 'inb' : 'det'; r++; continue; }
+    const li = R.findIndex(x => /^Loan Settlement$/i.test(x)); if (li >= 0) { const v = g[r].slice(li + 1).find(x => typeof x === 'number'); if (v != null) loanC += cents(v); }
+    const bi = R.findIndex(x => /^TOTAL BANK IN:?$/i.test(x)); if (bi >= 0) { const v = g[r].slice(bi + 1).find(x => typeof x === 'number'); if (v != null) bankC = cents(v); }
+    if (sec !== 'det' && sec !== 'inb') continue;
+    const x = g[r];
+    if (typeof x[1] === 'number') {
+      let d = pvKDate(R[2]) || a; if (dKey(d) < dKey(a)) d = a; if (dKey(d) > dKey(to)) d = to; const D = day(d);   // a trip booked before the period belongs to the period
+      if (sec === 'det') { D.sC += cents(x[iS]); D.pC += cents(x[iP]); } else D.inbC += cents(x[iS]);
+    } else if (iS >= 0 && typeof x[iS] === 'number') { if (sec === 'det') detTot = { N: cents(x[iN]), P: cents(x[iP]), S: cents(x[iS]) }; else inbTot = cents(x[iS]); sec = 'done'; }
+  }
+  const ds = Object.values(days).sort((p, q) => dKey(p.date) - dKey(q.date));
+  return { kind: 'klia', code: code.trim(), file: fileName, from: a, to, days: ds, loanC, bankC, detTot, inbTot };
+}
+// Import CashBook file: last DocNo per series (to suggest the next running number)
+function pvReadCashbook(wb) {
+  const last = {};
+  wb.worksheets.forEach(ws => {
+    ws.eachRow((row, r) => { if (r < 4) return; const v = pvTxt(row.getCell(2).value), m = /^([A-Z0-9]+?)(\d+)\/(\d{4})$/.exec(v); if (!m) return; const k = m[1], yymm = m[3], n = +m[2], o = last[k]; if (!o || yymm > o.yymm || (yymm === o.yymm && n > o.n)) last[k] = { doc: v, n, yymm }; });
+  });
+  return last;
+}
+
+/* ---------------- voucher builders ---------------- */
+const pvL = (acc, desc, amtC, accD) => ({ acc, desc, amtC, accD });
+function pvBusVoucher(s) {
+  const P = pvP(s.term), MS = s.term === 'MS', cross = pvMk(s.from) !== pvMk(s.to), full = rangeText(s.from, s.to);
+  const prev = s.rows.filter(r => pvMk(r.date) < pvMk(s.to)), cur = s.rows.filter(r => pvMk(r.date) === pvMk(s.to));
+  const span = rs => { const d = rs.map(r => r.date).sort((a, b) => dKey(a) - dKey(b)); return d.length ? rangeText(d[0], d[d.length - 1]) : ''; };
+  const sum = (rs, f) => rs.reduce((a, r) => a + f(r), 0), lines = [], warn = [];
+  if (prev.length) lines.push(pvL(P.temp, `SALES [${span(prev)}]`, sum(prev, r => r.final - r.under), P.tempD));
+  const rc = span(cur);
+  if (cur.length) {
+    lines.push(pvL(P.acc, `SALES [${rc}]`, sum(cur, r => r.sales), P.accD));
+    const ch = (lbl, v) => { if (v) lines.push(pvL(P.contra, MS ? (lbl === 'TERMINAL CHARGES' ? `TERMINAL CHARGES [${rc}]` : `SALES [${rc}] - ${lbl}`) : `${lbl} [${rc}]`, v, P.contraD)); };
+    ch('TERMINAL CHARGES', sum(cur, r => r.term)); ch('PICK UP CHARGES', sum(cur, r => r.pick)); ch('PARKING CHARGES', sum(cur, r => r.park));
+    s.adjNames.forEach((n, j) => ch(pvChargeName(n), sum(cur, r => r.adj[j] || 0)));
+  }
+  // undersales: the payee keeps a company's negative day (new, +) and NSS recovers older ones (−) — through the temporary control account
+  const negDays = co => s.rows.filter(r => r.co === co && r.final < 0).map(r => r.date).sort((a, b) => dKey(a) - dKey(b));
+  const ud = (dt, co) => MS ? `SALES [${dt}] - UNDERSALES [${co}]` : `UNDERSALES [${dt}] - [${co}]`;
+  s.newU.forEach(u => { const n = negDays(u.co), dt = cross || !n.length ? full : rangeText(n[0], n[n.length - 1]); lines.push(pvL(P.temp, ud(dt, u.co), Math.abs(u.amt), P.tempD)); });
+  s.oldU.forEach(u => lines.push(pvL(P.temp, ud(u.dt || full, u.co), -Math.abs(u.amt), P.tempD)));
+  const sumUnder = sum(s.rows, r => r.under), sumOld = s.oldU.reduce((a, u) => a - Math.abs(u.amt), 0);
+  if (sumUnder !== sumOld) warn.push(`Undersales column ${fmtC(sumUnder)} ≠ UNDERSALES (-) list ${fmtC(sumOld)}`);
+  if (!P.acc || !P.contra || !P.temp) warn.push('Account codes missing — set them in Codes');
+  return { key: `bus|${s.term}|${dmyStr(s.from)}|${dmyStr(s.to)}`, grp: s.term, series: P.series, payee: P.payee, desc: `SALES [${full}]`, from: s.from, to: s.to, lines, P, srcBank: s.bankC, srcLbl: 'TOTAL BANK IN', file: s.file, warn };
+}
+function pvProVoucher(hw, list) {
+  const P = pvP(hw), days = list.slice().sort((a, b) => dKey(a.date) - dKey(b.date)), from = days[0].date, to = days[days.length - 1].date, full = rangeText(from, to);
+  const prev = days.filter(d => pvMk(d.date) < pvMk(to)), cur = days.filter(d => pvMk(d.date) === pvMk(to)), lines = [], warn = [];
+  const span = ds => rangeText(ds[0].date, ds[ds.length - 1].date), sum = (ds, k) => ds.reduce((a, d) => a + d[k], 0);
+  if (prev.length) lines.push(pvL(P.temp, `PROLINTAS SETTLEMENT [${hw} ${span(prev)}]`, sum(prev, 'payC'), P.tempD));
+  if (cur.length) { lines.push(pvL(P.acc, `PROLINTAS SETTLEMENT [${hw} ${span(cur)}]`, sum(cur, 'amtC'), P.accD)); lines.push(pvL(P.contra, `PROLINTAS COMMISSION [${hw} ${span(cur)}]`, -sum(cur, 'commC'), P.contraD)); }
+  days.forEach(d => { if (d.amtC - d.commC !== d.payC) warn.push(`${dmyStr(d.date)}: Amount − Commission ≠ Payout`); });
+  const gap = allDays(from, to).filter(d => !days.some(x => dKey(x.date) === dKey(d))); if (gap.length) warn.push('No file for ' + gap.map(dmyStr).join(', '));
+  return { key: `pro|${hw}|${dmyStr(from)}|${dmyStr(to)}`, grp: hw, series: P.series, payee: P.payee, desc: `SALES [${full}]`, from, to, lines, P, srcBank: sum(days, 'payC'), srcLbl: 'Payout (Summary)', file: days.map(d => d.file).join(' + '), warn };
+}
+function pvKliaVoucher(k) {
+  const P = pvP('KLIA'), payee = pvCfg().kops[k.code] || '', full = rangeText(k.from, k.to), lines = [], warn = [];
+  const prev = k.days.filter(d => pvMk(d.date) < pvMk(k.to)), cur = k.days.filter(d => pvMk(d.date) === pvMk(k.to));
+  const span = ds => rangeText(ds[0].date, ds[ds.length - 1].date), sum = (ds, f) => ds.reduce((a, d) => a + f(d), 0);
+  if (prev.length) lines.push(pvL(P.temp, `SALES [${span(prev)}]`, sum(prev, d => d.sC + d.inbC), P.tempD));
+  if (cur.length) { const rc = span(cur); lines.push(pvL(P.acc, `SALES [${rc}]`, sum(cur, d => d.sC - d.pC + d.inbC), P.accD)); lines.push(pvL(P.contra, `COMMISION [${rc}]`, sum(cur, d => d.pC), P.contraD)); }
+  if (k.loanC) lines.push(pvL(P.loan, `DEDUCTION LOAN SETTLEMENT ${pvMonLbl(k.from)}  [${full}]`, -Math.abs(k.loanC), P.loanD));
+  if (!payee) warn.push(`Operator "${k.code}" has no AutoCount payee — set it in Codes`);
+  if (k.days.some(d => d.inbC)) warn.push(`Inbound ${fmtC(sum(k.days, d => d.inbC))} is included in SALES (as on the report's TOTAL BANK IN)`);
+  if (k.detTot && k.detTot.S !== sum(k.days, d => d.sC)) warn.push('Trip lines do not add up to the report total');
+  const bank = k.bankC != null ? k.bankC : (k.detTot ? k.detTot.S : 0) + (k.inbTot || 0) - Math.abs(k.loanC);
+  return { key: `klia|${k.code}|${dmyStr(k.from)}|${dmyStr(k.to)}`, grp: 'KLIA', series: P.series, payee: payee || k.code, desc: lines.length ? lines[0].desc : `SALES [${full}]`, from: k.from, to: k.to, lines, P, srcBank: bank, srcLbl: k.bankC != null ? 'TOTAL BANK IN' : 'Payable', file: k.file, warn, op: k.code };
+}
+// engine state (already computed by the Ferry and TBS modules in this session)
+function pvFerryVouchers() {
+  const out = [], R = S.C && S.C.report; if (!R || typeof computeC !== 'function') return out;
+  stations().forEach(st => {
+    const C = computeC(st); if (!C) return;
+    const name = clean((R.labels && R.labels[st]) || st).toUpperCase(), key = Object.keys(PV_DEF).find(k => norm(k) === norm(name)) || name;
+    const P = pvP(key) || { ...PV_DEF.MERSING, label: name, payee: '', proj: '', acc: '', contra: '', temp: '', accD: name, contraD: `CONTRA ACCOUNT [${name}]` };
+    const r = rangeText(C.from, C.to), lines = [pvL(P.acc, `SALES [${r}]`, C.gOn.tot, P.accD), pvL(P.contra, `COMMISSION ONLINE ${name} [${r}]`, C.gOn.comm + C.gOn.sc, P.contraD), pvL(P.contra, `COMMISSION MDR ${name} [${r}]`, C.gOn.mdr + C.gOn.sm, P.contraD), pvL(P.contra, `COMMISSION AGENT ${name} [${r}]`, -C.gAg.tot, P.contraD)].filter(x => x.amtC);
+    const warn = [];
+    if (C.rec > 0) { lines.push(pvL(P.temp, `UNDERSALES RECOVERED [${r}]`, -C.rec, P.tempD)); warn.push(`Recovers ${fmtC(C.rec)} of earlier under-settlement (tracker)`); }
+    if (C.nu > 0) warn.push(`NET is short by ${fmtC(C.nu)} — under-settlement goes to the tracker, nothing to pay`);
+    if (!P.acc || !P.contra || !P.payee) warn.push('Account codes / payee not set — fill them in Codes before importing');
+    out.push({ key: `ferry|${name}|${dmyStr(C.from)}|${dmyStr(C.to)}`, grp: key, series: P.series, payee: P.payee, desc: `SALES [${r}]`, from: C.from, to: C.to, lines, P, srcBank: C.np, srcLbl: 'NET PAYABLE', file: R.file, warn, skip: C.nu > 0 && C.np <= 0 });
+  });
+  return out;
+}
+function pvTbsVouchers() {
+  if (typeof tDays !== 'function') return [];
+  const P = pvP('TBS');
+  return tDays().map(D => {
+    const r = tCompute(D); if (!r.k && !r.o) return null;
+    const d = dmyStr(D.date), lines = [];
+    const add = (lbl, x) => { if (!x) return; lines.push(pvL(P.acc, `${lbl} SALES - [${d}]`, x.sales, P.accD), pvL(P.contra, `${lbl} SALES (MDR) - [${d}]`, x.mS, P.contraD), pvL(P.acc, `${lbl} INSURANCE CHARGES - [${d}]`, x.ins, P.accD), pvL(P.contra, `${lbl} INSURANCE CHARGES (MDR) - [${d}]`, x.mI, P.contraD)); };
+    add('KIOSK', r.k); add('ONLINE', r.o);
+    const warn = r.checks.filter(c => !c.ok && c.level !== 'info').map(c => c.label);
+    return { key: `tbs|${d}`, grp: 'TBS', series: P.series, payee: P.payee, desc: lines[0] ? lines[0].desc : `SALES [${d}]`, from: D.date, to: D.date, lines: lines.filter(x => x.amtC), P, srcBank: (r.k ? r.k.net : 0) + (r.o ? r.o.net : 0), srcLbl: 'Kiosk + Online net', file: 'TBS', warn };
+  }).filter(Boolean);
+}
+function pvEngineBus() {
+  const out = [];
+  ['KT', 'MS'].forEach(t => {
+    if (!S.A[t] || !S.A[t].settle || typeof computeA !== 'function') return;
+    let C; try { C = computeA(t); } catch (e) { return; } if (!C) return;
+    const st = S.A[t].settle, ds = C.rows.map(r => r.date).sort((a, b) => dKey(a) - dKey(b));
+    const s = { kind: 'bus', term: t, file: 'engine: ' + (st.file || 'Daily Settlement'), from: ds[0], to: ds[ds.length - 1], adjNames: C.cfg.adj.map(a => a.name),
+      rows: C.rows.map(r => ({ date: r.date, co: r.company, sales: r.sales, term: r.terminal, pick: r.pickup, park: r.parking, adj: r.adj.slice(), under: r.under, final: r.final })),
+      newU: C.newU.map(u => ({ co: u.company, amt: u.amt })), oldU: C.oldD.map(o => ({ co: o.company, dt: typeof o.date === 'string' ? o.date : o.date ? dmyStr(o.date) : '', amt: o.amt })), bankC: C.leftBank };
+    out.push(s);
+  });
+  return out;
+}
+// every voucher available now: dropped finished files first, the engine's own state for what was not dropped
+function pvList() {
+  const out = [], have = new Set();
+  Object.values(PV.bus).forEach(s => { const v = pvBusVoucher(s); out.push(v); have.add(v.grp + dmyStr(s.from) + dmyStr(s.to)); });
+  pvEngineBus().forEach(s => { if (!have.has(s.term + dmyStr(s.from) + dmyStr(s.to))) out.push({ ...pvBusVoucher(s), eng: true }); });
+  Object.entries(PV.pro).forEach(([hw, days]) => { const l = Object.values(days); if (l.length) out.push(pvProVoucher(hw, l)); });
+  Object.values(PV.klia).forEach(k => out.push(pvKliaVoucher(k)));
+  try { pvFerryVouchers().forEach(v => out.push({ ...v, eng: true })); } catch (e) { }
+  try { pvTbsVouchers().forEach(v => out.push({ ...v, eng: true })); } catch (e) { }
+  // edits, manual lines, dates, running numbers
+  out.forEach(v => {
+    const e = PV.ed[v.key] || {};
+    v.date = e.date ? anyDate(e.date) || pvNext(v.to) : pvNext(v.to);
+    v.lines = v.lines.map((l, i) => { const o = (e.lines || {})[i]; return o ? { ...l, ...o, edited: true } : l; }).filter((l, i) => !(e.del || {})[i]);
+    (e.extra || []).forEach(x => v.lines.push({ ...x, manual: true }));
+    v.off = !!e.off || !!v.skip; v.bc = e.bc != null ? e.bc : Math.round((v.P.bc || 0) * 100);
+    v.total = v.lines.reduce((a, l) => a + (l.amtC || 0), 0);
+    v.manC = v.lines.filter(l => l.manual).reduce((a, l) => a + (l.amtC || 0), 0);   // deliberate adjustments typed by the user
+    v.ok = v.srcBank == null || v.total - v.manC === v.srcBank;
+  });
+  const ord = g => { const i = PV_ORDER.indexOf(g); return i < 0 ? 50 : i; };
+  out.sort((a, b) => (a.series < b.series ? -1 : a.series > b.series ? 1 : 0) || dKey(a.date) - dKey(b.date) || ord(a.grp) - ord(b.grp) || String(a.payee).localeCompare(String(b.payee)));
+  // DocNo: series + running number + /YYMM of the voucher date (per series and month)
+  const cnt = {};
+  out.forEach(v => {
+    const e = PV.ed[v.key] || {}, k = v.series + '|' + pvYYMM(v.date), nx = pvCfg().next[k];
+    if (v.off) { v.doc = ''; return; }
+    if (e.no) { v.doc = e.no; return; }
+    if (nx == null) { v.doc = ''; return; }
+    cnt[k] = cnt[k] == null ? +nx : cnt[k] + 1;
+    v.doc = `${v.series}${pad(cnt[k])}/${pvYYMM(v.date)}`;
+  });
+  return out;
+}
+
+/* ---------------- output: rows for the Import CashBook sheet ---------------- */
+function pvRows(v, r0) {
+  const P = v.P, rows = [], n = v.lines.length, last = r0 + n - 1;
+  v.lines.forEach((l, i) => {
+    const o = { M: l.acc, N: 1, O: P.proj, R: l.desc, Z: l.amtC / 100 };
+    if (i === 0) Object.assign(o, { B: v.doc, C: toUTC(v.date), D: 'PV', E: v.payee, F: v.desc, G: 'MYR', H: 1, I: 1, K: 'F', AE: P.pm, AG: fx(n > 1 ? `SUM(Z${r0}:Z${last})` : `Z${r0}`, v.total / 100), AI: 1, AN: P.by, AO: P.float || 2, AP: 'F' });
+    if (i === 0 && v.bc) o.AH = v.bc / 100;
+    rows.push(o);
+  });
+  return rows;
+}
+async function pvXlsx(list) {
+  const wb = new ExcelJS.Workbook(), by = {};
+  list.filter(v => !v.off && v.lines.length).forEach(v => (by[v.series] = by[v.series] || []).push(v));
+  Object.keys(by).sort().forEach(sn => {
+    const ws = wb.addWorksheet(sn, { views: [{ state: 'frozen', ySplit: 3 }] });
+    PV_COLS.forEach((c, i) => { ws.getColumn(i + 1).width = PV_HDR.w[c] || 9; });
+    ['r1', 'r2', 'r3'].forEach((k, ri) => Object.entries(PV_HDR[k]).forEach(([c, v]) => { const x = ws.getCell(`${c}${ri + 1}`); x.value = v; x.font = { bold: ri === 0 || (ri === 2 && PV_HDR.bold.includes(c)), size: ri === 1 ? 8 : 10, color: ri === 1 ? { argb: 'FF667084' } : undefined }; x.alignment = { vertical: 'top', wrapText: ri === 1 }; if (ri !== 1) x.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ri === 0 ? 'FFD9E1F2' : 'FFEEF2F8' } }; }));
+    ws.mergeCells('B1:K1'); ws.mergeCells('M1:AD1'); ws.mergeCells('AE1:AQ1'); ws.getRow(2).height = 42;
+    let r = 4;
+    by[sn].forEach(v => {
+      pvRows(v, r).forEach(o => {
+        Object.entries(o).forEach(([c, val]) => { const x = ws.getCell(`${c}${r}`); x.value = val; if (c === 'C') x.numFmt = 'dd/mm/yyyy'; if (c === 'Z' || c === 'AG' || c === 'AH') x.numFmt = '#,##0.00;-#,##0.00'; });
+        r++;
+      });
+    });
+  });
+  return wbBlob(wb);
+}
+// tab-separated rows (A..AQ) to paste straight under the team's own Import CashBook sheet
+function pvTsv(list, series) {
+  const out = []; let r = 1;
+  list.filter(v => !v.off && v.lines.length && (!series || v.series === series)).forEach(v => pvRows(v, r).forEach(o => {
+    out.push(PV_COLS.map(c => { const x = o[c]; if (x == null) return ''; if (x instanceof Date) return dmyStr(fromJsDate(x)); if (typeof x === 'object' && x.formula) return (x.result).toFixed(2); if (typeof x === 'number' && c === 'Z') return x.toFixed(2); return String(x); }).join('\t'));
+    r++;
+  }));
+  return out.join('\n');
+}
+
+/* ---------------- intake: files dropped while Import Cashbook is open ---------------- */
+async function pvIngest(file) {
+  const chip = { name: file.name, kind: '?', note: '', ok: false, module: 'V' };
+  const buf = await file.arrayBuffer(), u = new Uint8Array(buf.slice(0, 2));
+  if (!(u[0] === 0x50 && u[1] === 0x4b)) return null;
+  const wb = await loadXlsx(buf), names = wb.worksheets.map(w => w.name);
+  if (names.some(n => /^(MSM2TPV|M1TPV|M3TPV\s*)$/.test(n))) { PV.last = pvReadCashbook(wb); PV.cbFile = file.name; Object.assign(chip, { ok: true, kind: 'Import CashBook (last numbers)', note: Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV)/.test(o.doc)).map(o => o.doc).join(' · ') }); return chip; }
+  const b = typeof isCompletedSettlement === 'function' && isCompletedSettlement(wb) ? pvReadBus(wb, file.name) : null;
+  if (b) { PV.bus[b.term + dmyStr(b.from) + dmyStr(b.to)] = b; Object.assign(chip, { ok: true, kind: `PV · Daily Settlement ${b.term}`, date: rangeText(b.from, b.to), note: `TOTAL BANK IN ${fmtC(b.bankC)}` }); return chip; }
+  const p = pvReadPro(wb, file.name);
+  if (p) { (PV.pro[p.hw] = PV.pro[p.hw] || {})[dKey(p.date)] = p; Object.assign(chip, { ok: true, kind: `PV · Prolintas ${p.hw}`, date: dmyStr(p.date), note: `Payout ${fmtC(p.payC)}` }); return chip; }
+  const k = pvReadKlia(wb, file.name);
+  if (k) { PV.klia[k.code + dmyStr(k.from)] = k; Object.assign(chip, { ok: true, kind: `PV · KLIA ${pvCfg().kops[k.code] ? k.code : k.code + ' (no payee)'}`, date: rangeText(k.from, k.to), note: k.bankC != null ? `TOTAL BANK IN ${fmtC(k.bankC)}` : '' }); return chip; }
+  return null;
+}
+EXT.load.push(async () => { PV.cfg = await DB.get('pvCfg', null); pvCfg(); });
+{ const i = TABS.findIndex(t => t[0] === 'E'); TABS.splice(i < 0 ? TABS.length : i, 0, ['V', 'Import Cashbook', 'AutoCount payment vouchers']); }
+
+/* ---------------- screen ---------------- */
+const PV_GRPS = [['ALL', 'All vouchers'], ['KT', 'Kuala Terengganu'], ['MS', 'Melaka Sentral'], ['PRO', 'Prolintas'], ['KLIA', 'KLIA TQMS'], ['FERRY', 'Ferry'], ['TBS', 'TBS'], ['SET', 'Codes & numbering']];
+const pvInGrp = (v, g) => g === 'ALL' || v.grp === g || (g === 'PRO' && (v.grp === 'SILK' || v.grp === 'LKSA')) || (g === 'FERRY' && v.key.startsWith('ferry|'));
+function pvCard(v) {
+  const e = PV.ed[v.key] || {}, money = c => fmtC(c), id = esc(v.key);
+  const bad = !v.ok, diff = v.srcBank != null ? v.total - v.manC - v.srcBank : 0;
+  return `<section class="pvc${v.off ? ' off' : ''}" data-k="${id}">
+  <div class="pvh"><label class="pvon"><input type="checkbox" data-act="pvoff" data-k="${id}" ${v.off ? '' : 'checked'}> Include</label><span class="pvsrc">${esc(v.file || '')}${v.eng ? ' · from engine' : ''}</span></div>
+  <div class="pvtop">
+    <div class="pvf"><label>Pay To</label><b>${esc(v.payee || '—')}</b></div>
+    <div class="pvf r"><label>Voucher No</label><input class="in" data-act="pvno" data-k="${id}" value="${esc(v.doc)}" placeholder="set start no." size="16"></div>
+    <div class="pvf"><label>Description</label><span>${esc(v.desc)}</span></div>
+    <div class="pvf r"><label>Date</label><input class="in" data-act="pvdate" data-k="${id}" value="${esc(dmyStr(v.date))}" size="11"></div>
+    <div class="pvf"><label>Currency</label><span>MYR · rate 1</span></div>
+  </div>
+  <h4 class="pvt">Payment Voucher</h4>
+  <table class="t dense pvpay"><tr><th>Payment Method</th><th class="r">Payment Amount</th><th class="r">Bank Charge</th><th>Payment By</th><th class="r">Float</th></tr>
+  <tr><td>${esc(v.P.pm)}</td><td class="r"><b>${money(v.total)}</b></td><td class="r"><input class="in r" data-act="pvbc" data-k="${id}" value="${(v.bc / 100).toFixed(2)}" size="6"></td><td>${esc(v.P.by)}</td><td class="r">${v.P.float || 2}</td></tr></table>
+  <table class="t dense pvl"><tr><th>Acc. No.</th><th>Account Desc.</th><th>Description</th><th class="r">Amount</th><th>Proj. No.</th><th></th></tr>
+  ${v.lines.map((l, i) => `<tr class="${l.manual ? 'man' : ''}"><td class="${l.acc ? '' : 'miss'}">${esc(l.acc || 'set code')}</td><td class="muted">${esc(l.accD || '')}</td><td>${l.manual ? esc(l.desc) : `<input class="in w" data-act="pvld" data-k="${id}" data-i="${i}" value="${esc(l.desc)}">`}</td><td class="r ${l.amtC < 0 ? 'neg' : ''}">${l.manual ? money(l.amtC) : `<input class="in r" data-act="pvla" data-k="${id}" data-i="${i}" value="${(l.amtC / 100).toFixed(2)}" size="10">`}</td><td>${esc(v.P.proj || '')}</td><td>${l.manual ? `<button class="x" data-act="pvxdel" data-k="${id}" data-i="${i - (v.lines.length - (e.extra || []).length)}" title="Remove">×</button>` : ''}</td></tr>`).join('')}
+  <tr class="add"><td><select class="in" data-pvacc="${id}">${[['acc', v.P.acc], ['contra', v.P.contra], ['temp', v.P.temp]].filter(x => x[1]).map(([k, a]) => `<option value="${k}">${esc(a)}</option>`).join('')}</select></td><td colspan="2"><input class="in w" data-pvdesc="${id}" placeholder="Manual line, e.g. ${esc(v.desc)} - [TNAHGBL]"></td><td class="r"><input class="in r" data-pvamt="${id}" placeholder="-0.00" size="10"></td><td colspan="2"><button class="btn sm" data-act="pvxadd" data-k="${id}">+ Line</button></td></tr></table>
+  <div class="pvfoot"><div>${v.warn.map(w => `<span class="pill warnp">${esc(w)}</span>`).join(' ')}</div>
+  <div class="pvtot"><span>Net Total <b>${money(v.total)}</b></span>${v.manC ? `<span class="muted">incl. manual lines ${money(v.manC)}</span>` : ''}${v.srcBank != null ? `<span class="${bad ? 'bad' : 'ok'}">${esc(v.srcLbl)} ${money(v.srcBank)} ${bad ? `· differs ${money(diff)}` : '✓'}</span>` : ''}</div></div></section>`;
+}
+function pvCodes() {
+  const c = pvCfg(), f = [['label', 'Project'], ['series', 'Series'], ['payee', 'Pay To (DealWith)'], ['proj', 'Proj. No.'], ['acc', 'Sales acc.'], ['contra', 'Contra acc.'], ['temp', 'Temp. control acc.'], ['pm', 'Payment method'], ['by', 'Payment by'], ['bc', 'Bank charge']];
+  return `<section class="card"><h3>Account codes per project</h3><p class="hint">Defaults come from your posted vouchers (Import CashBook history and AutoCount). Empty = not found in your files — fill it before importing.</p>
+  <div class="scroll"><table class="t dense"><tr>${f.map(x => `<th>${x[1]}</th>`).join('')}<th>Loan acc.</th></tr>${Object.keys(c.p).map(k => `<tr>${f.map(([fk]) => fk === 'label' ? `<td><b>${esc(c.p[k].label)}</b></td>` : `<td><input class="in${c.p[k][fk] === '' && fk !== 'bc' ? ' miss' : ''}" data-act="pvcf" data-p="${esc(k)}" data-f="${fk}" value="${esc(c.p[k][fk])}" size="${fk === 'payee' ? 30 : fk === 'bc' ? 5 : 11}"></td>`).join('')}<td>${k === 'KLIA' ? `<input class="in" data-act="pvcf" data-p="KLIA" data-f="loan" value="${esc(c.p.KLIA.loan)}" size="9">` : ''}</td></tr>`).join('')}</table></div></section>
+  <section class="card"><h3>KLIA operators → AutoCount payee</h3><table class="t dense"><tr><th>Code in report</th><th>Pay To</th></tr>${Object.entries(c.kops).map(([k, v]) => `<tr><td>${esc(k)}</td><td><input class="in w" data-act="pvkop" data-o="${esc(k)}" value="${esc(v)}"></td></tr>`).join('')}</table></section>`;
+}
+EXT.render.V = function renderV() {
+  const c = pvCfg(), sel = PV.sel || 'ALL', all = pvList(), list = all.filter(v => pvInGrp(v, sel));
+  const months = [...new Set(all.map(v => v.series + '|' + pvYYMM(v.date)))].sort();
+  let h = `<div class="seg pvseg" style="flex-wrap:wrap">${PV_GRPS.map(([k, l]) => { const n = k === 'SET' ? '' : all.filter(v => pvInGrp(v, k) && !v.off).length; return `<button class="${k === sel ? 'on' : ''}" data-act="pvsel" data-v="${k}">${l}${n ? ` <small>${n}</small>` : ''}</button>`; }).join('')}</div>`;
+  if (sel === 'SET') { panel().innerHTML = h + pvCodes(); return; }
+  h += `<section class="card"><h3>Running numbers</h3><p class="hint">The next number comes from AutoCount — type the first number for each series and month; the rest follow. ${PV.cbFile ? `Last in <b>${esc(PV.cbFile)}</b>: ${Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV)/.test(o.doc)).map(o => esc(o.doc)).join(' · ')}` : 'Drop your Import CashBook file here to see the last numbers used.'}</p>
+  <div class="row">${months.length ? months.map(k => { const [s, m] = k.split('|'), L0 = PV.last[s] && PV.last[s].yymm === m ? PV.last[s].n + 1 : ''; return `<label class="fld">${esc(s)} ··/${esc(m)}<input class="in" type="number" min="1" data-act="pvnext" data-v="${esc(k)}" value="${c.next[k] != null ? c.next[k] : ''}" placeholder="${L0 ? 'e.g. ' + L0 : 'start no.'}" size="6"></label>`; }).join('') : '<span class="muted">No vouchers yet.</span>'}</div>
+  <div class="actions"><button class="btn pri" data-act="pvdl">⬇ Import CashBook (.xlsx)</button>${[...new Set(all.filter(v => !v.off).map(v => v.series))].map(s => `<button class="btn" data-act="pvcopy" data-v="${esc(s)}">Copy ${esc(s)} rows</button>`).join('')}<span class="sp"></span><button class="btn sm" data-act="pvclr">Clear files</button></div></section>`;
+  if (!list.length) { panel().innerHTML = h + empty('Drop the finished settlement files here', 'DAILY SETTLEMENT KT / MS · SETTLEMENT PROLINTAS SILK / LKSA · OPERATOR SETTLEMENT REPORT (…) complete (KLIA). Ferry and TBS vouchers appear by themselves once their reports are loaded in the engine.'); return; }
+  const tot = list.filter(v => !v.off).reduce((a, v) => a + v.total, 0), bad = list.filter(v => !v.off && !v.ok).length, noNo = list.filter(v => !v.off && !v.doc).length;
+  h += `<div class="stats">${stat('Vouchers', list.filter(v => !v.off).length)}${stat('Total payment', fmtC(tot), 'hl')}${stat('Not matching source', bad, bad ? 'bad' : '')}${stat('Without voucher no.', noNo, noNo ? 'bad' : '')}</div>`;
+  panel().innerHTML = h + list.map(pvCard).join('');
+};
+
+if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
+  const st = document.createElement('style');
+  st.textContent = `.pvc{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:0 0 16px}.pvc.off{opacity:.5}
+  .pvh{display:flex;justify-content:space-between;align-items:center;font-size:.78rem;color:var(--mut);margin-bottom:6px}.pvon{display:flex;gap:6px;align-items:center;color:var(--ink);font-weight:500}
+  .pvtop{display:grid;grid-template-columns:1fr auto;gap:6px 24px;align-items:center}.pvf{display:flex;gap:12px;align-items:center;font-size:.9rem}.pvf.r{justify-content:flex-end}.pvf label{min-width:92px;color:var(--mut);font-size:.8rem}.pvf.r label{min-width:auto}
+  .pvt{color:#d0021b;text-align:center;font-size:1.25rem;font-weight:700;margin:12px 0 8px}
+  .pvpay,.pvl{width:100%;margin-bottom:10px}.pvl td{vertical-align:middle}.pvl .in.w{width:100%;min-width:300px}.pvl td.miss,.in.miss{color:#d0021b;font-weight:600}.pvl td.neg,.pvl td.neg input{color:var(--bad,#b42318)}.pvl tr.man td{background:color-mix(in srgb,var(--pri) 7%,transparent)}.pvl tr.add td{border-top:1px dashed var(--line)}
+  .pvfoot{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}.pvtot{display:flex;flex-direction:column;align-items:flex-end;gap:4px;font-size:.9rem}.pvtot .ok{color:var(--ok,#067647)}.pvtot .bad{color:var(--bad,#b42318);font-weight:600}
+  .pill.warnp{background:color-mix(in srgb,#f79009 15%,transparent);color:var(--ink);display:inline-block;margin:2px 4px 2px 0;white-space:normal}`;
+  document.head.appendChild(st);
+  // while Import Cashbook is open, dropped files are read for vouchers first; anything else goes to the normal reader
+  const _ingest = ingest;
+  ingest = async function (file) { if (S.tab === 'V') { try { const c = await pvIngest(file); if (c) return c; } catch (e) { console.error(e); } } return _ingest(file); };
+  const _hf = handleFiles;
+  handleFiles = async function (list) { const was = S.tab; await _hf(list); if (was === 'V' && S.tab !== 'V') { S.tab = 'V'; renderAll(); } };
+  const ed = k => PV.ed[k] = PV.ed[k] || {};
+  document.addEventListener('click', async e => {
+    const b = e.target.closest('[data-act]'); if (!b) return; const a = b.dataset.act, k = b.dataset.k;
+    if (a === 'pvsel') { PV.sel = b.dataset.v; renderAll(); }
+    else if (a === 'pvxadd') { const box = b.closest('.pvc'), acc = box.querySelector(`[data-pvacc]`).value, d = clean(box.querySelector('[data-pvdesc]').value), amt = num(box.querySelector('[data-pvamt]').value); if (!d || amt == null) { toast('Fill description and amount', 'bad'); return; } const v = pvList().find(x => x.key === k); (ed(k).extra = ed(k).extra || []).push({ acc: v.P[acc], accD: v.P[acc + 'D'], desc: d, amtC: cents(amt) }); renderAll(); }
+    else if (a === 'pvxdel') { const x = ed(k).extra || []; x.splice(+b.dataset.i, 1); renderAll(); }
+    else if (a === 'pvclr') { PV.bus = {}; PV.pro = {}; PV.klia = {}; PV.ed = {}; S.files = (S.files || []).filter(f => f.module !== 'V'); renderAll(); }
+    else if (a === 'pvdl') { const l = pvList().filter(v => !v.off), miss = l.filter(v => !v.doc).length, bad = l.filter(v => !v.ok).length; if (miss) { toast(`${miss} voucher(s) have no voucher no. — type the start number`, 'bad'); return; } const noAcc = l.filter(v => v.lines.some(x => !x.acc) || !v.payee).map(v => v.P.label); if (noAcc.length) { toast(`Account code / payee missing for: ${[...new Set(noAcc)].join(', ')} — fill them in Cash Book codes (or untick those vouchers)`, 'bad'); return; } if (bad && !confirm(`${bad} voucher(s) do not match their settlement total. Download anyway?`)) return; await busy('Building Import CashBook…', async () => saveBlob(`IMPORT CASHBOOK PV ${typeof cuToday === 'function' ? cuToday() : pvYYMM(l[0].date)}.xlsx`, await pvXlsx(l))); }
+    else if (a === 'pvcopy') { const t = pvTsv(pvList(), b.dataset.v); try { await navigator.clipboard.writeText(t); toast(`${t.split('\n').length} ${b.dataset.v} rows copied — paste in column A of the first empty row`); } catch (er) { toast('Clipboard blocked by the browser', 'bad'); } }
+  });
+  document.addEventListener('change', e => {
+    const t = e.target, a = t.dataset.act, k = t.dataset.k; if (!a || !/^pv/.test(a)) return;
+    if (a === 'pvoff') ed(k).off = !t.checked;
+    else if (a === 'pvno') ed(k).no = clean(t.value);
+    else if (a === 'pvdate') { const d = anyDate(t.value); if (!d) { toast('Date: dd/mm/yyyy', 'bad'); return; } ed(k).date = dmyStr(d); }
+    else if (a === 'pvbc') ed(k).bc = cents(t.value);
+    else if (a === 'pvld') { const L0 = (ed(k).lines = ed(k).lines || {}); L0[t.dataset.i] = { ...(L0[t.dataset.i] || {}), desc: clean(t.value) }; }
+    else if (a === 'pvla') { const L0 = (ed(k).lines = ed(k).lines || {}); L0[t.dataset.i] = { ...(L0[t.dataset.i] || {}), amtC: cents(t.value) }; }
+    else if (a === 'pvnext') { const v = t.value === '' ? null : Math.max(1, Math.floor(+t.value)); if (v == null) delete pvCfg().next[t.dataset.v]; else pvCfg().next[t.dataset.v] = v; pvSave(); }
+    else if (a === 'pvcf') { const p = pvCfg().p[t.dataset.p]; p[t.dataset.f] = t.dataset.f === 'bc' ? (num(t.value) || 0) : t.value.trim(); pvSave(); }
+    else if (a === 'pvkop') { pvCfg().kops[t.dataset.o] = t.value.trim(); pvSave(); }
+    else return;
+    renderAll();
+  });
+}
+
+
 /* ===== ext: charges.js ===== */
 /* ====================== CHARGES — the team's own Excel files: TOS manual pickup, RFID, barrier gate, undersales lists ======================
    TOS Manual Invoice (sheet "Template") and the RFID lists hold tables of
@@ -5380,7 +5778,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v43';
+  const VER = 'v44';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5439,7 +5837,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v43';
+const SE_VER = 'v44';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
@@ -5537,28 +5935,42 @@ document.addEventListener('change', async e => {
 
 
 /* ===== ext: ui.js ===== */
-/* ====================== LAYOUT BY PROJECT — sidebar (Projects / Tools / Settings), page title, files of the open project only ====================== */
+/* ====================== LAYOUT — sidebar in 4 collapsible groups: Settlement Project · Import Cashbook · Tools · Settings ====================== */
 // Pure DOM/CSS: no images or libraries, so it adds nothing to load or processing time.
 (function () {
   if (typeof HTMLElement === 'undefined') return;            // headless test harness
-  const tabName = k => (TABS.find(t => t[0] === k) || [k, k, ''])[1], tabSub = k => (TABS.find(t => t[0] === k) || [k, k, ''])[2];
-  // every bus terminal is its own entry; the other modules are one project each
+  const has = k => TABS.some(t => t[0] === k), tabName = k => (TABS.find(t => t[0] === k) || [k, k, ''])[1], tabSub = k => (TABS.find(t => t[0] === k) || [k, k, ''])[2];
+  const pvSel = () => (typeof PV !== 'undefined' && PV.sel) || 'ALL';
+  // one entry per screen; {k: tab, term / pv / et / mail: what the entry opens inside that tab}
   const items = () => [
-    ['Projects', [...terms().map(t => ({ k: 'A', term: t, name: termName(t) || t, sub: 'Daily Settlement · Sales Report · Invoice Summary' })),
-      ...['B', 'C', 'K', 'T', 'M', 'X'].filter(k => TABS.some(t => t[0] === k)).map(k => ({ k, name: k === 'C' ? ((typeof ferryProj === 'function' && ferryProj() || {}).name || 'Ferry') : tabName(k), sub: tabSub(k) }))]],
-    ['Tools', ['E'].filter(k => TABS.some(t => t[0] === k)).map(k => ({ k, name: tabName(k), sub: tabSub(k) }))],
-    ['Settings', ['P', 'L'].filter(k => TABS.some(t => t[0] === k)).map(k => ({ k, name: tabName(k), sub: tabSub(k) }))],
+    ['set', 'Settlement Project', [
+      ...terms().map(t => ({ k: 'A', term: t, name: termName(t) || t, sub: 'Daily Settlement · Sales Report · Invoice Summary' })),
+      ...['B', 'C', 'K', 'T', 'M', 'X'].filter(has).map(k => ({ k, name: k === 'C' ? ((typeof ferryProj === 'function' && ferryProj() || {}).name || 'Ferry') : tabName(k), sub: tabSub(k) }))]],
+    ['cb', 'Import Cashbook', has('V') ? [
+      { k: 'V', pv: 'ALL', name: 'All payment vouchers', sub: 'AutoCount Import CashBook · every project' },
+      { k: 'V', pv: 'KT', name: 'Kuala Terengganu', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'MS', name: 'Melaka Sentral', sub: 'PV · MSM2TPV', s: 1 },
+      { k: 'V', pv: 'PRO', name: 'Prolintas (SILK · LKSA)', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'KLIA', name: 'KLIA TQMS', sub: 'PV · M3TPV', s: 1 },
+      { k: 'V', pv: 'FERRY', name: 'Ferry', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'TBS', name: 'TBS', sub: 'PV · M1TPV', s: 1 }] : []],
+    ['tools', 'Tools', [
+      ...(has('E') ? [{ k: 'E', et: 'MS', name: 'Email · Melaka Sentral', sub: 'Bulk email to operators' }, { k: 'E', et: 'KT', name: 'Email · Kuala Terengganu', sub: 'Bulk email to operators' }] : []),
+      { k: 'Q', mail: 'Prolintas', name: 'Email · Prolintas', sub: 'Not set up yet', soon: 1 }, { k: 'Q', mail: 'KTMB', name: 'Email · KTMB', sub: 'Not set up yet', soon: 1 }, { k: 'Q', mail: 'KLIA', name: 'Email · KLIA', sub: 'Not set up yet', soon: 1 }]],
+    ['settings', 'Settings', [
+      ...['P', 'L'].filter(has).map(k => ({ k, name: tabName(k), sub: tabSub(k) })),
+      ...(has('V') ? [{ k: 'V', pv: 'SET', name: 'Cash Book codes', sub: 'Accounts · payees · running numbers' }] : [])]]
   ];
-  const isOn = it => S.tab === it.k && (it.k !== 'A' || S.termTab === it.term);
+  const isOn = it => S.tab === it.k && (it.term == null || S.termTab === it.term) && (it.pv == null || pvSel() === it.pv || (it.pv === 'ALL' && !items()[1][2].some(x => x.pv === pvSel() && x.pv !== 'ALL') && pvSel() !== 'SET')) && (it.et == null || S.eTerm === it.et) && (it.mail == null || S.qMail === it.mail);
   // a file belongs to the open project when its module matches (bus terminals: same terminal; its ledger files count too)
   const mine = f => !f.ok || (f.module === S.tab && (S.tab !== 'A' || !f.term || f.term === S.termTab)) || (S.tab === 'A' && f.module === 'L' && f.term === S.termTab) || (S.tab === 'L' && f.module === 'L');
-  const count = it => (S.files || []).filter(f => f.ok && f.module === it.k && (it.k !== 'A' || !f.term || f.term === it.term)).length;
+  const count = it => it.k === 'V' || it.k === 'Q' ? 0 : (S.files || []).filter(f => f.ok && f.module === it.k && (it.k !== 'A' || !f.term || f.term === it.term)).length;
+  let closed = {}; try { closed = JSON.parse(localStorage.getItem('se.side') || '{}'); } catch (e) { }
+  const attrs = it => `data-act="tab" data-v="${it.k}"${it.term ? ` data-term="${esc(it.term)}"` : ''}${it.pv ? ` data-pv="${it.pv}"` : ''}${it.et ? ` data-et="${it.et}"` : ''}${it.mail ? ` data-mail="${esc(it.mail)}"` : ''}`;
 
   renderTabs = function () {
     if (S.tab === 'A' && !terms().includes(S.termTab)) S.termTab = terms()[0];
-    $('#tabs').innerHTML = items().map(([g, list]) => list.length ? `<div class="grp">${g}</div>` + list.map(it => { const n = count(it);
-      return `<button class="${isOn(it) ? 'on' : ''}" data-act="tab" data-v="${it.k}"${it.term ? ` data-term="${esc(it.term)}"` : ''} title="${esc(it.sub)}"><span class="tn">${esc(it.name)}</span>${n ? `<span class="tb" title="${n} files loaded">${n}</span>` : ''}</button>`; }).join('') : '').join('');
-    const cur = items().flatMap(x => x[1]).find(isOn), ph = $('#ptitle');
+    const G = items();
+    $('#tabs').innerHTML = G.map(([id, g, list]) => !list.length ? '' : `<div class="grp${closed[id] ? ' closed' : ''}" data-ui="grp" data-g="${id}" role="button" tabindex="0"><span>${g}</span><i class="chev">▾</i></div><div class="gbody${closed[id] ? ' closed' : ''}">` + list.map(it => { const n = count(it);
+      return `<button class="${isOn(it) ? 'on' : ''}${it.s ? ' sub' : ''}" ${attrs(it)} title="${esc(it.sub)}"><span class="tn">${esc(it.name)}</span>${it.soon ? '<span class="soon">soon</span>' : n ? `<span class="tb" title="${n} files loaded">${n}</span>` : ''}</button>`; }).join('') + '</div>').join('');
+    const cur = G.flatMap(x => x[2]).find(isOn), ph = $('#ptitle');
     if (ph) ph.innerHTML = cur ? `<h2>${esc(cur.name)}</h2><span>${esc(cur.sub)}</span>` : '';
     const d = $('#drop'); if (d) d.classList.toggle('mini', (S.files || []).length > 0);
   };
@@ -5567,13 +5979,29 @@ document.addEventListener('change', async e => {
     const chip = ({ f, i }) => `<span class="chip ${f.ok ? (f.warn ? 'warn' : 'ok') : 'bad'}" title="${esc(f.note || '')}"><i>${f.ok ? (f.warn ? '⚠' : '✓') : '✕'}</i><b>${esc(f.kind)}</b><em>${esc(f.name)}</em>${f.date ? `<u>${esc(f.date)}</u>` : ''}<button data-act="rmchip" data-v="${i}" title="Remove">×</button></span>`;
     $('#chips').innerHTML = !all.length ? '' : `<div class="fl"><span>${list.length ? `<b>${list.length}</b> file${list.length === 1 ? '' : 's'}${S.chipsAll ? ' loaded' : ' for this project'}` : 'No files for this project yet'}</span>${other || S.chipsAll ? `<button class="lnk" data-ui="chipsall">${S.chipsAll ? 'Show this project only' : `Show all ${all.length} files`}</button>` : ''}</div>` + list.map(chip).join('');
   };
-  // sidebar click on a terminal: choose the terminal before the tab handler renders
+  // the email tools that do not exist yet say so plainly instead of pretending
+  EXT.render.Q = function () {
+    panel().innerHTML = `<section class="card"><h3>Email · ${esc(S.qMail || '')}</h3><p class="hint">This bulk email is not set up yet. Send one real email you normally write for ${esc(S.qMail || 'this project')} (subject, body, attachment name) and the recipient list through <b>Feedback</b> at the top, and it will be built the same way as the KT / MS email merge.</p></section>`;
+  };
+  // sidebar click: choose the terminal / voucher group / email set before the tab handler renders
   document.addEventListener('click', e => {
-    const b = e.target.closest('#tabs button[data-term]'); if (b) S.termTab = b.dataset.term;
+    const g = e.target.closest('#tabs [data-ui="grp"]');
+    if (g) { const id = g.dataset.g; closed[id] = !closed[id]; try { localStorage.setItem('se.side', JSON.stringify(closed)); } catch (er) { } renderTabs(); return; }
+    const b = e.target.closest('#tabs button[data-act="tab"]');
+    if (b) { if (b.dataset.term) S.termTab = b.dataset.term; if (b.dataset.pv && typeof PV !== 'undefined') PV.sel = b.dataset.pv; if (b.dataset.et) S.eTerm = b.dataset.et; if (b.dataset.mail) S.qMail = b.dataset.mail; }
     const c = e.target.closest('[data-ui="chipsall"]'); if (c) { S.chipsAll = !S.chipsAll; renderChips(); }
   }, true);
+  document.addEventListener('keydown', e => { const g = e.target.closest && e.target.closest('#tabs [data-ui="grp"]'); if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); g.click(); } });
   // the file list follows the open project (the tab / terminal handlers re-render the panel only)
-  document.addEventListener('click', e => { if (e.target.closest('[data-act="tab"],[data-act="term"]')) setTimeout(() => { renderTabs(); renderChips(); }, 0); });
+  document.addEventListener('click', e => { if (e.target.closest('[data-act="tab"],[data-act="term"],[data-act="pvsel"]')) setTimeout(() => { renderTabs(); renderChips(); }, 0); });
+  const st = document.createElement('style');
+  st.textContent = `#tabs .grp{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--ink);padding:16px 10px 7px;border-radius:6px}
+  #tabs .grp:hover{background:var(--soft)}#tabs .grp .chev{font-style:normal;color:var(--mut);transition:transform .15s}#tabs .grp.closed .chev{transform:rotate(-90deg)}#tabs .gbody.closed{display:none}
+  #tabs .grp:first-child{padding-top:8px}#tabs .grp+.gbody{padding-bottom:4px;border-bottom:1px solid var(--line)}#tabs .gbody:last-child{border-bottom:0}
+  #tabs button{font-size:.93rem!important;font-weight:500;color:var(--ink);padding:8px 10px!important}#tabs button.sub{padding-left:24px!important;font-size:.88rem!important}
+  #tabs button.on{font-weight:650}#tabs .soon{flex:none;font-size:.66rem;color:var(--mut);border:1px solid var(--line);border-radius:999px;padding:0 7px}
+  @media(max-width:1000px){#tabs .gbody,#tabs .gbody.closed{display:contents}}`;
+  document.head.appendChild(st);
 })();
 
 </script>
