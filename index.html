@@ -4358,21 +4358,31 @@ async function mlMailOpen(list) {
   ML.attNow = list.map(e => e.key); renderAll();
   toast(list.length > 1 ? `${list.length} new emails opened in Outlook — attach the files shown on each card, then Send` : 'New email opened in Outlook — attach the files shown in yellow, then Send');
 }
+// how the button makes the email — chosen on every Email page, remembered
+const ML_MODES = [
+  ['mailto', '✉ New email', 'Opens a New mail in Outlook with To, Cc, subject and wording (Outlook adds your signature). You attach the files. Nothing to install.'],
+  ['popup', '📨 New email + attachments', 'Pops up a New mail ready to Send, with the attachments and the GoHub signature already in. Needs the Outlook Helper.'],
+  ['drafts', '🗂 Save to Drafts', 'Every email goes into Outlook → Drafts (FINANCE - NSS IT) with attachments and signature; New Outlook comes to the front. Best for many emails. Needs the Outlook Helper.'],
+  ['eml', '⬇ Email file (.eml)', 'Downloads the email with attachments and signature; open the file and Outlook shows it ready to Send.']
+];
+const mlMode = () => { const c = mlCfg(); return c.mode || (c.useHelper ? (c.popup === false ? 'drafts' : 'popup') : 'mailto'); };
+const mlModeDef = () => ML_MODES.find(m => m[0] === mlMode()) || ML_MODES[0];
 async function mlOpen(list) {
-  if (!mlCfg().useHelper) return mlMailOpen(list);
+  const mode = mlMode();
+  if (mode === 'mailto') return mlMailOpen(list);
+  if (mode === 'eml') { for (const e of list) { saveBlobRaw(mlFile(e), mlEml(e)); if (list.length > 1) await new Promise(r => setTimeout(r, 500)); } toast(`${list.length} email file${list.length > 1 ? 's' : ''} downloaded — open each: Outlook shows it ready to Send`); return; }
   const bad = list.filter(e => !e.to.some(r => r.email)); if (bad.length && !confirm(`${bad.length} email(s) have no To address. Continue anyway?`)) return;
-  if (await mlHelperOn()) {
+  if (!(await mlHelperOn())) { toast('The Outlook Helper is not running on this PC. Double-click OUTLOOK HELPER on the Desktop once (it then starts with Windows). If the browser asks to allow access to apps on this device, press Allow. Or choose “✉ New email” above.', 'bad'); return; }
+  if (true) {
+    const pop = mode === 'popup';
     let ok = 0; const nf = [], err = [];
     await busy(`Putting ${list.length} email${list.length > 1 ? 's' : ''} into Outlook…`, async () => {
       for (let i = 0; i < list.length; i++) {
-        try { const r = await (await fetch(ML_HELPER + '/draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mlPayload(list[i], list.length === 1 && mlCfg().popup !== false ? 'classic' : i === list.length - 1)) })).json(); if (r.ok) { ok++; (r.notFound || []).forEach(x => nf.push(x)); } else err.push(r.error); } catch (er) { err.push(er.message); }
+        try { const r = await (await fetch(ML_HELPER + '/draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mlPayload(list[i], pop ? 'classic' : i === list.length - 1)) })).json(); if (r.ok) { ok++; (r.notFound || []).forEach(x => nf.push(x)); } else err.push(r.error); } catch (er) { err.push(er.message); }
       }
     });
-    toast([ok ? (list.length === 1 && mlCfg().popup !== false ? 'Email opened in Outlook — check it and press Send (also kept in Drafts).' : `${ok} draft${ok > 1 ? 's' : ''} in Outlook → Drafts (FINANCE - NSS IT). Open each and press Send.`) : '', nf.length ? `Outlook could not find: ${[...new Set(nf)].join(', ')}` : '', err.length ? 'Error: ' + err[0] : ''].filter(Boolean).join(' · '), err.length || nf.length ? 'bad' : 'ok');
-    return;
+    toast([ok ? (pop ? `${ok} email${ok > 1 ? 's' : ''} opened in Outlook — check and press Send (also kept in Drafts).` : `${ok} draft${ok > 1 ? 's' : ''} in Outlook → Drafts (FINANCE - NSS IT). Open each and press Send.`) : '', nf.length ? `Outlook could not find: ${[...new Set(nf)].join(', ')}` : '', err.length ? 'Error: ' + err[0] : ''].filter(Boolean).join(' · '), err.length || nf.length ? 'bad' : 'ok');
   }
-  for (const e of list) { saveBlobRaw(mlFile(e), mlEml(e)); if (list.length > 1) await new Promise(r => setTimeout(r, 500)); }
-  toast('Could not reach the Outlook Helper — downloaded instead. 1) Double-click OUTLOOK HELPER on the Desktop once. 2) If the browser asks to allow access to apps / devices on this computer (local network), press Allow. Then press the button again.', 'bad');
 }
 
 /* ---- dropped files ---- */
@@ -4430,7 +4440,7 @@ function mlCard(e, i, n) {
   const pr = mlProblems(e), D = mlDir('CASH');
   return `<section class="card mlmail" data-k="${esc(e.key)}">
   <div class="mlhd"><h3>${n > 1 ? `<span class="pill">${i + 1}/${n}</span> ` : ''}${esc(e.title)}</h3><span class="sp"></span>
-    <button class="btn pri" data-act="mlopen" data-k="${esc(e.key)}" title="Opens a New mail in Outlook with To, Cc, subject and wording (Outlook adds your signature). Then attach the files shown and Send.">✉ New email in Outlook</button>
+    <button class="btn pri" data-act="mlopen" data-k="${esc(e.key)}" title="${esc(mlModeDef()[2])}">${esc(mlModeDef()[1])}</button>
     <button class="btn" data-act="mlcopy" data-k="${esc(e.key)}" title="Copies the body + signature (with banner) to paste into any email">Copy body</button></div>
   <div class="mlhead">
     <div><b>From</b><span>${esc(mlCfg().from.name)} &lt;${esc(mlCfg().from.email)}&gt;</span></div>
@@ -4467,6 +4477,12 @@ function mlDateBar(id) {
   if (t.when === 'days') return inp('a', 'First day') + inp('b', 'Last day');
   return inp('a', 'Settlement date') + inp('b', 'To date (only for a period)');
 }
+// the “how to send” choice, shown on every Email page and in Settings
+function mlModeBar() {
+  const m = mlModeDef(), from = mlCfg().from.email, helper = /^(popup|drafts)$/.test(m[0]);
+  return `<div class="mlmode"><b>How to send</b><div class="seg">${ML_MODES.map(x => `<button class="${x[0] === m[0] ? 'on' : ''}" data-act="mlmode" data-v="${x[0]}" title="${esc(x[2])}">${esc(x[1])}</button>`).join('')}</div>
+  <p class="hint" style="margin:6px 0 0">${esc(m[2])} From: <b>${esc(from)}</b>.${m[0] === 'mailto' ? ` <span class="neg">Outlook decides the From of a New email: in New Outlook set ${esc(from)} as the default account once (Settings → Accounts → Email accounts → … → Set as default), or pick it in From before Send.</span>` : ''}${helper ? ' <span class="ml-hs pill">checking Outlook Helper…</span>' : ''}</p></div>`;
+}
 function mlKliaTable() {
   const att = ML.att.KLIA || [];
   return `<section class="card"><h3>KLIA operators</h3><p class="hint">Tick who gets an email. Emails from Bus Operators Summary (TQMS KLIA) — ALM as in your email. A file whose name has the operator tag / code attaches to that operator by itself; other files go to the operator chosen in “Drop to”.</p>
@@ -4496,10 +4512,7 @@ function mlSettings() {
   <section class="card"><h3>Paste contacts</h3><p class="hint">Paste a list like <code>Kelvin Chew &lt;name@gohub.com.my&gt;; Yee Hew Fai &lt;…&gt;</code> — names already in the list get the email, new names are added.</p>
   <textarea class="in mlta" id="ml-paste" rows="3" style="width:100%"></textarea><div class="actions"><button class="btn pri" data-act="mlpaste">Add to contacts</button></div></section>
   <section class="card"><h3>How the email is made</h3>
-  <label class="mlrow"><span>Method</span><select class="in" data-act="mlhelp"><option value="0"${!c.useHelper ? ' selected' : ''}>New email in Outlook (nothing to install) — attach the files yourself</option><option value="1"${c.useHelper ? ' selected' : ''}>Outlook Helper on this PC — attachments + GoHub signature added for you</option></select></label></section>
-  <section class="card"${c.useHelper ? '' : ' hidden'}><h3>When I press the button (Outlook Helper)</h3>
-  <label class="mlrow"><span>One email</span><select class="in" data-act="mlpop"><option value="1"${c.popup !== false ? ' selected' : ''}>Pop up as a New mail window, ready to Send (Outlook classic window)</option><option value="0"${c.popup === false ? ' selected' : ''}>Put it in Drafts and bring New Outlook to the front</option></select></label>
-  <p class="hint">“Open all” (Cashless, SBST, KLIA…) always goes to Drafts, so you check them one by one instead of getting many windows at once.</p></section>
+  ${mlModeBar()}
   <section class="card"><h3>How “Open in Outlook” works</h3><ol class="hint" style="margin:0;padding-left:18px">
   <li>Press <b>✉ New email in Outlook</b>: Outlook opens a <b>New mail</b> with To, Cc, subject and wording filled, and adds your signature. Check that <b>From</b> is finance.nssit@gohub.com.my.</li>
   <li>Attach the files listed in yellow on the card (Attach file → Browse this computer), then press <b>Send</b>. Nothing is ever sent by the engine.</li>
@@ -4509,18 +4522,19 @@ function mlSettings() {
 EXT.render.Q = function () {
   mlCfg(); const pg = ML.page = S.qMail && (ML_PAGES[S.qMail] || S.qMail === 'SET') ? S.qMail : 'OPPAY';
   const hs = () => mlHelperOn().then(ok => document.querySelectorAll('.ml-hs').forEach(x => { x.textContent = ok ? 'Outlook Helper running ✓ — the button goes straight into Outlook' : 'Outlook Helper not reached — double-click OUTLOOK HELPER on the Desktop; if the browser asks to allow access to apps on this device, press Allow'; x.className = 'ml-hs pill ' + (ok ? 'ok' : 'bad'); }));
-  if (pg === 'SET') { panel().innerHTML = mlSettings(); if (mlCfg().useHelper) hs(); return; }
+  const needH = /^(popup|drafts)$/.test(mlMode());
+  if (pg === 'SET') { panel().innerHTML = mlSettings(); if (needH) hs(); return; }
   const ids = ML_PAGES[pg], id = ML.tsel[pg] = ids.includes(ML.tsel[pg]) ? ML.tsel[pg] : ids[0], t = mlT(id), E = mlEmails(id);
   let h = '';
   if (ids.length > 1) h += `<div class="seg">${ids.map(x => `<button class="${x === id ? 'on' : ''}" data-act="mltsel" data-v="${x}"><b>${esc(mlT(x).name)}</b>${(ML.att[x] || []).length ? ` <small>${ML.att[x].length} files</small>` : ''}</button>`).join('')}</div>`;
   const files = t.files || (t.need || []).map(x => x[1]).join(' · ');
-  h += `<section class="card">${mlCfg().useHelper ? '<p style="margin:0 0 8px"><span class="ml-hs pill">checking Outlook Helper…</span></p>' : ''}<div class="row" style="align-items:flex-end">${mlDateBar(id)}<span class="sp"></span>${E.length > 1 ? `<button class="btn pri" data-act="mlall">✉ New email × ${E.length} in Outlook</button>` : ''}${(ML.att[id] || []).length ? `<button class="btn" data-act="mlclr" data-id="${id}">Remove all attachments</button>` : ''}</div>
+  h += `<section class="card">${mlModeBar()}<div class="row" style="align-items:flex-end">${mlDateBar(id)}<span class="sp"></span>${E.length > 1 ? `<button class="btn pri" data-act="mlall">${esc(mlModeDef()[1])} × ${E.length}</button>` : ''}${(ML.att[id] || []).length ? `<button class="btn" data-act="mlclr" data-id="${id}">Remove all attachments</button>` : ''}</div>
   <p class="hint">📎 <b>Drop the files</b> (or a whole folder's files / the zip) anywhere on this page${files ? `: <i>${esc(files)}</i>` : ''}. Each file goes to its email by its name and the date is taken from the name.</p>
   ${t.note ? `<p class="hint">ℹ ${esc(t.note)}</p>` : ''}</section>`;
   if (id === 'KLIA') h += mlKliaTable();
   h += E.length ? E.map((e, i) => mlCard(e, i, E.length)).join('') : `<section class="card"><p class="muted">${id === 'KLIA' ? 'Tick at least one operator above.' : 'Drop the files to make one email per operator.'}</p></section>`;
   h += mlTplEditor(id);
-  panel().innerHTML = h; if (mlCfg().useHelper) hs();
+  panel().innerHTML = h; if (needH) hs();
 };
 
 let ML_HF = null;
@@ -4532,7 +4546,8 @@ let ML_HF = null;
   const find = k => { for (const id of ML_PAGES[ML.page] || []) { const e = mlEmails(id).find(x => x.key === k); if (e) return e; } };
   document.addEventListener('click', async e => {
     const b = e.target.closest('[data-act]'); if (!b || S.tab !== 'Q') return; const a = b.dataset.act;
-    if (a === 'mltsel') { ML.tsel[ML.page] = b.dataset.v; renderAll(); }
+    if (a === 'mlmode') { mlCfg().mode = b.dataset.v; await mlSave(); renderAll(); }
+    else if (a === 'mltsel') { ML.tsel[ML.page] = b.dataset.v; renderAll(); }
     else if (a === 'mlopen') { const m = find(b.dataset.k); if (m) await mlOpen([m]); }
     else if (a === 'mlall') await mlOpen(mlEmails(ML.tsel[ML.page]));
     else if (a === 'mlcopy') {
@@ -4567,8 +4582,6 @@ let ML_HF = null;
     else if (a === 'mlkon') ML.kon[t.dataset.c] = t.checked;
     else if (a === 'mlkdrop') ML.kop = t.dataset.c;
     else if (a === 'mlcorp') { ML.corp[t.dataset.c] = t.value; ML.edit = {}; }
-    else if (a === 'mlhelp') { c.useHelper = t.value === '1'; await mlSave(); }
-    else if (a === 'mlpop') { c.popup = t.value === '1'; await mlSave(); }
     else if (a === 'mlfrom') { c.from[t.dataset.f] = t.value.trim(); await mlSave(); }
     else if (a === 'mlppl') { const v = t.value.trim(); if (t.dataset.f === 'email' && v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { toast('Invalid email: ' + v, 'bad'); return; } c.people[+t.dataset.i][t.dataset.f] = v; await mlSave(); }
     else if (a === 'mlsig') { const s = c.sig[t.dataset.k]; s[t.dataset.f] = t.type === 'checkbox' ? t.checked : t.value; await mlSave(); }
@@ -4580,7 +4593,7 @@ let ML_HF = null;
   const st = document.createElement('style');
   st.textContent = `.mlhd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.mlhd h3{margin:0}.mlhead{border:1px solid var(--line);border-radius:8px;margin:10px 0;font-size:.88rem}
   .mlhead>div{display:flex;gap:10px;padding:7px 10px;border-bottom:1px solid var(--line);align-items:flex-start}.mlhead>div:last-child{border-bottom:0}.mlhead b{flex:none;width:62px;color:var(--mut);font-weight:600}
-  .mlnow{background:#fff3c4;border:1px solid #f0c94a;border-radius:6px;padding:8px 10px;font-size:.86rem;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.mlnow .mlatt{cursor:grab;background:#fff}.ml-hs.ok{background:#e6f6ec;color:#1b6b3a}.ml-hs.bad{background:#fde8e8;color:#9b1c1c}.mlhead span{display:flex;flex-wrap:wrap;gap:5px;align-items:center}.mlsub{font-weight:600}.mlc{display:inline-flex;gap:4px;align-items:center;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:.82rem}
+  .mlmode{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px;background:var(--soft)}.mlmode>b{display:block;font-size:.8rem;color:var(--mut);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}.mlnow{background:#fff3c4;border:1px solid #f0c94a;border-radius:6px;padding:8px 10px;font-size:.86rem;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.mlnow .mlatt{cursor:grab;background:#fff}.ml-hs.ok{background:#e6f6ec;color:#1b6b3a}.ml-hs.bad{background:#fde8e8;color:#9b1c1c}.mlhead span{display:flex;flex-wrap:wrap;gap:5px;align-items:center}.mlsub{font-weight:600}.mlc{display:inline-flex;gap:4px;align-items:center;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:.82rem}
   .mlc small{color:var(--mut)}.mlc.bad{background:#fde8e8;border-color:#f3a9a9;color:#9b1c1c}.mlatt{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:.82rem}
   .mlatt button{border:0;background:none;cursor:pointer;color:var(--mut);font-size:1rem}.mlpick{padding:2px 10px!important;font-size:.8rem!important;cursor:pointer}
   .mlwarn{background:#fff6e0;border:1px solid #f0d58a;color:#7a5600;border-radius:6px;padding:7px 10px;font-size:.84rem;margin-bottom:10px}
@@ -6318,7 +6331,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v51';
+  const VER = 'v52';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6377,7 +6390,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v51';
+const SE_VER = 'v52';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
