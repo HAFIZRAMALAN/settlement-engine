@@ -4336,10 +4336,28 @@ function mlProblems(e) {
   else (e.need || []).forEach(([re, lab]) => { if (!e.att.some(a => new RegExp(re, 'i').test(a.name))) p.push('Missing attachment: ' + lab); });
   return p;
 }
+// Outlook Helper (C:\stw\outlook\helper.ps1, on this PC): saves each email as a draft in Drafts of finance.nssit
+// with attachments + signature and brings New Outlook to the front. Without the helper: .eml download.
+const ML_HELPER = 'http://127.0.0.1:8790';
+async function mlHelperOn() { try { const c = new AbortController(), t = setTimeout(() => c.abort(), 900); const r = await fetch(ML_HELPER + '/ping', { signal: c.signal }); clearTimeout(t); return r.ok && (await r.json()).ok; } catch (e) { return false; } }
+function mlPayload(e, show) {
+  const c = mlCfg(), sig = c.sig[e.sig] || {};
+  return { from: c.from.email, to: e.to, cc: e.cc, subject: e.subject, html: mlBodyHtml(e), sig: sig.img ? MAIL_SIG_IMG.b64 : '', sigExt: MAIL_SIG_IMG.type === 'image/png' ? 'png' : 'jpg', att: e.att.map(a => ({ name: a.name, b64: mlB64buf(a.buf) })), show };
+}
 async function mlOpen(list) {
-  const bad = list.filter(e => !e.to.some(r => r.email)); if (bad.length && !confirm(`${bad.length} email(s) have no To address. Open anyway?`)) return;
+  const bad = list.filter(e => !e.to.some(r => r.email)); if (bad.length && !confirm(`${bad.length} email(s) have no To address. Continue anyway?`)) return;
+  if (await mlHelperOn()) {
+    let ok = 0; const nf = [], err = [];
+    await busy(`Putting ${list.length} email${list.length > 1 ? 's' : ''} into Outlook…`, async () => {
+      for (let i = 0; i < list.length; i++) {
+        try { const r = await (await fetch(ML_HELPER + '/draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mlPayload(list[i], i === list.length - 1)) })).json(); if (r.ok) { ok++; (r.notFound || []).forEach(x => nf.push(x)); } else err.push(r.error); } catch (er) { err.push(er.message); }
+      }
+    });
+    toast([ok ? `${ok} draft${ok > 1 ? 's' : ''} in Outlook → Drafts (FINANCE - NSS IT). Open it and press Send.` : '', nf.length ? `Outlook could not find: ${[...new Set(nf)].join(', ')}` : '', err.length ? 'Error: ' + err[0] : ''].filter(Boolean).join(' · '), err.length || nf.length ? 'bad' : 'ok');
+    return;
+  }
   for (const e of list) { saveBlobRaw(mlFile(e), mlEml(e)); if (list.length > 1) await new Promise(r => setTimeout(r, 500)); }
-  toast(list.length > 1 ? `${list.length} drafts downloaded — open each one: Outlook shows it ready to Send` : 'Draft downloaded — open it: Outlook shows it ready to Send');
+  toast('Outlook Helper is not running — downloaded instead. To go straight into Outlook: double-click OUTLOOK HELPER on the Desktop once, then press the button again.', 'bad');
 }
 
 /* ---- dropped files ---- */
@@ -4397,7 +4415,7 @@ function mlCard(e, i, n) {
   const pr = mlProblems(e), D = mlDir('CASH');
   return `<section class="card mlmail" data-k="${esc(e.key)}">
   <div class="mlhd"><h3>${n > 1 ? `<span class="pill">${i + 1}/${n}</span> ` : ''}${esc(e.title)}</h3><span class="sp"></span>
-    <button class="btn pri" data-act="mlopen" data-k="${esc(e.key)}" title="Downloads a .eml draft — opening it puts the email in Outlook, ready to Send">✉ Open in Outlook</button>
+    <button class="btn pri" data-act="mlopen" data-k="${esc(e.key)}" title="Saves this email in Outlook Drafts (finance.nssit) with attachments and signature, and brings Outlook to the front">✉ Open in Outlook</button>
     <button class="btn" data-act="mlcopy" data-k="${esc(e.key)}" title="Copies the body + signature (with banner) to paste into any email">Copy body</button></div>
   <div class="mlhead">
     <div><b>From</b><span>${esc(mlCfg().from.name)} &lt;${esc(mlCfg().from.email)}&gt;</span></div>
@@ -4460,24 +4478,25 @@ function mlSettings() {
   ${Object.entries(c.sig).map(([k, s]) => `<tr><td><b>${k}</b></td><td><input class="in" data-act="mlsig" data-k="${k}" data-f="a" value="${esc(s.a)}"></td><td><input class="in" data-act="mlsig" data-k="${k}" data-f="b" value="${esc(s.b)}"></td><td><input type="checkbox" data-act="mlsig" data-k="${k}" data-f="bb"${s.bb ? ' checked' : ''}></td><td><input type="checkbox" data-act="mlsig" data-k="${k}" data-f="img"${s.img ? ' checked' : ''}></td></tr>`).join('')}</table>
   <div class="mlpaper" style="margin-top:10px">${mlSigHtml('DEPT', mlImgData())}</div></section>
   <section class="card"><h3>How “Open in Outlook” works</h3><ol class="hint" style="margin:0;padding-left:18px">
-  <li>The button downloads a draft (<b>.eml</b>). Open it from the browser's downloads: Outlook opens a <b>new email</b> with From, To, Cc, subject, wording, signature and attachments — check it and press <b>Send</b>.</li>
-  <li>To skip that click: in the browser's downloads list, on the .eml file choose <b>⋯ → Always open files of this type</b>. After that the email pops up in Outlook as soon as you press the button.</li>
+  <li>Press <b>✉ Open in Outlook</b>: the email goes straight into <b>Outlook → Drafts</b> of FINANCE - NSS IT (From, To, Cc, subject, wording, signature, attachments) and Outlook comes to the front. Open the draft at the top and press <b>Send</b>. Nothing is ever sent by the engine.</li>
+  <li>This needs the small <b>Outlook Helper</b> running on this PC: double-click <b>OUTLOOK HELPER</b> on the Desktop once (it starts by itself with Windows). Status: <span class="ml-hs pill">checking…</span></li>
   <li>You can still change anything in Outlook before sending.</li></ol></section>`;
 }
 EXT.render.Q = function () {
   mlCfg(); const pg = ML.page = S.qMail && (ML_PAGES[S.qMail] || S.qMail === 'SET') ? S.qMail : 'OPPAY';
-  if (pg === 'SET') { panel().innerHTML = mlSettings(); return; }
+  const hs = () => mlHelperOn().then(ok => document.querySelectorAll('.ml-hs').forEach(x => { x.textContent = ok ? 'Outlook Helper running ✓ — the button goes straight into Outlook' : 'Outlook Helper not running — double-click OUTLOOK HELPER on the Desktop'; x.className = 'ml-hs pill ' + (ok ? 'ok' : 'bad'); }));
+  if (pg === 'SET') { panel().innerHTML = mlSettings(); hs(); return; }
   const ids = ML_PAGES[pg], id = ML.tsel[pg] = ids.includes(ML.tsel[pg]) ? ML.tsel[pg] : ids[0], t = mlT(id), E = mlEmails(id);
   let h = '';
   if (ids.length > 1) h += `<div class="seg">${ids.map(x => `<button class="${x === id ? 'on' : ''}" data-act="mltsel" data-v="${x}"><b>${esc(mlT(x).name)}</b>${(ML.att[x] || []).length ? ` <small>${ML.att[x].length} files</small>` : ''}</button>`).join('')}</div>`;
   const files = t.files || (t.need || []).map(x => x[1]).join(' · ');
-  h += `<section class="card"><div class="row" style="align-items:flex-end">${mlDateBar(id)}<span class="sp"></span>${E.length > 1 ? `<button class="btn pri" data-act="mlall">✉ Open all ${E.length} in Outlook</button>` : ''}${(ML.att[id] || []).length ? `<button class="btn" data-act="mlclr" data-id="${id}">Remove all attachments</button>` : ''}</div>
+  h += `<section class="card"><p style="margin:0 0 8px"><span class="ml-hs pill">checking Outlook Helper…</span></p><div class="row" style="align-items:flex-end">${mlDateBar(id)}<span class="sp"></span>${E.length > 1 ? `<button class="btn pri" data-act="mlall">✉ Open all ${E.length} in Outlook</button>` : ''}${(ML.att[id] || []).length ? `<button class="btn" data-act="mlclr" data-id="${id}">Remove all attachments</button>` : ''}</div>
   <p class="hint">📎 <b>Drop the files</b> (or a whole folder's files / the zip) anywhere on this page${files ? `: <i>${esc(files)}</i>` : ''}. Each file goes to its email by its name and the date is taken from the name.</p>
   ${t.note ? `<p class="hint">ℹ ${esc(t.note)}</p>` : ''}</section>`;
   if (id === 'KLIA') h += mlKliaTable();
   h += E.length ? E.map((e, i) => mlCard(e, i, E.length)).join('') : `<section class="card"><p class="muted">${id === 'KLIA' ? 'Tick at least one operator above.' : 'Drop the files to make one email per operator.'}</p></section>`;
   h += mlTplEditor(id);
-  panel().innerHTML = h;
+  panel().innerHTML = h; hs();
 };
 
 let ML_HF = null;
@@ -4530,7 +4549,7 @@ let ML_HF = null;
   const st = document.createElement('style');
   st.textContent = `.mlhd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.mlhd h3{margin:0}.mlhead{border:1px solid var(--line);border-radius:8px;margin:10px 0;font-size:.88rem}
   .mlhead>div{display:flex;gap:10px;padding:7px 10px;border-bottom:1px solid var(--line);align-items:flex-start}.mlhead>div:last-child{border-bottom:0}.mlhead b{flex:none;width:62px;color:var(--mut);font-weight:600}
-  .mlhead span{display:flex;flex-wrap:wrap;gap:5px;align-items:center}.mlsub{font-weight:600}.mlc{display:inline-flex;gap:4px;align-items:center;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:.82rem}
+  .ml-hs.ok{background:#e6f6ec;color:#1b6b3a}.ml-hs.bad{background:#fde8e8;color:#9b1c1c}.mlhead span{display:flex;flex-wrap:wrap;gap:5px;align-items:center}.mlsub{font-weight:600}.mlc{display:inline-flex;gap:4px;align-items:center;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:.82rem}
   .mlc small{color:var(--mut)}.mlc.bad{background:#fde8e8;border-color:#f3a9a9;color:#9b1c1c}.mlatt{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:.82rem}
   .mlatt button{border:0;background:none;cursor:pointer;color:var(--mut);font-size:1rem}.mlpick{padding:2px 10px!important;font-size:.8rem!important;cursor:pointer}
   .mlwarn{background:#fff6e0;border:1px solid #f0d58a;color:#7a5600;border-radius:6px;padding:7px 10px;font-size:.84rem;margin-bottom:10px}
@@ -6268,7 +6287,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v48';
+  const VER = 'v49';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6327,7 +6346,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v48';
+const SE_VER = 'v49';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
