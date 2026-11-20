@@ -3533,10 +3533,10 @@ async function pvXlsx(list) {
   return wbBlob(wb);
 }
 // tab-separated rows (A..AQ) to paste straight under the team's own Import CashBook sheet
-function pvTsv(list, series) {
-  const out = []; let r = 1;
+function pvTsv(list, series, head) {
+  const out = head ? [PV_COLS.map(c => PV_HDR.r3[c] == null ? '' : String(PV_HDR.r3[c])).join('	')] : []; let r = 1;
   list.filter(v => !v.off && v.lines.length && (!series || v.series === series)).forEach(v => pvRows(v, r).forEach(o => {
-    out.push(PV_COLS.map(c => { const x = o[c]; if (x == null) return ''; if (x instanceof Date) return dmyStr(fromJsDate(x)); if (typeof x === 'object' && x.formula) return (x.result).toFixed(2); if (typeof x === 'number' && c === 'Z') return x.toFixed(2); return String(x); }).join('\t'));
+    out.push(PV_COLS.map(c => { const x = o[c]; if (x == null) return ''; if (x instanceof Date) return dmyStr(fromJsDate(x)); if (typeof x === 'object' && x.formula) return (x.result).toFixed(2); if (typeof x === 'number' && (c === 'Z' || c === 'AH')) return x.toFixed(2); return String(x); }).join('\t'));
     r++;
   }));
   return out.join('\n');
@@ -3597,7 +3597,8 @@ EXT.render.V = function renderV() {
   if (sel === 'SET') { panel().innerHTML = h + pvCodes(); return; }
   h += `<section class="card"><h3>Running numbers</h3><p class="hint">The next number comes from AutoCount — type the first number for each series and month; the rest follow. ${PV.cbFile ? `Last in <b>${esc(PV.cbFile)}</b>: ${Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV)/.test(o.doc)).map(o => esc(o.doc)).join(' · ')}` : 'Drop your Import CashBook file here to see the last numbers used.'}</p>
   <div class="row">${months.length ? months.map(k => { const [s, m] = k.split('|'), L0 = PV.last[s] && PV.last[s].yymm === m ? PV.last[s].n + 1 : ''; return `<label class="fld">${esc(s)} ··/${esc(m)}<input class="in" type="number" min="1" data-act="pvnext" data-v="${esc(k)}" value="${c.next[k] != null ? c.next[k] : ''}" placeholder="${L0 ? 'e.g. ' + L0 : 'start no.'}" size="6"></label>`; }).join('') : '<span class="muted">No vouchers yet.</span>'}</div>
-  <div class="actions"><button class="btn pri" data-act="pvdl">⬇ Import CashBook (.xlsx)</button>${[...new Set(all.filter(v => !v.off).map(v => v.series))].map(s => `<button class="btn" data-act="pvcopy" data-v="${esc(s)}">Copy ${esc(s)} rows</button>`).join('')}<span class="sp"></span><button class="btn sm" data-act="pvclr">Clear files</button></div></section>`;
+  <div class="actions"><button class="btn pri" data-act="pvdl">⬇ Import CashBook (.xlsx)</button>${[...new Set(all.filter(v => !v.off).map(v => v.series))].map(s => `<button class="btn" data-act="pvcopy" data-v="${esc(s)}" data-h="1" title="DocNo header row + vouchers, columns A to AQ">Copy ${esc(s)} for AutoCount</button>`).join('')}<span class="sp"></span><button class="btn sm" data-act="pvclr">Clear files</button></div>
+  <p class="hint"><b>AutoCount → Import Cash Book → Paste from Clipboard:</b> click <b>Copy … for AutoCount</b> here, then <b>Paste from Clipboard</b> — no Excel needed. From the Excel file instead: select from cell <b>A3</b> (DocNo header row, starting at column <b>A</b>) to column <b>AQ</b> of the last row. Starting at column B shifts every field and AutoCount says <i>Not valid Doc No for import found</i>. Import one series (MSM2TPV / M1TPV / M3TPV) at a time.</p></section>`;
   if (!list.length) { panel().innerHTML = h + empty('Drop the finished settlement files here', 'DAILY SETTLEMENT KT / MS · SETTLEMENT PROLINTAS SILK / LKSA · OPERATOR SETTLEMENT REPORT (…) complete (KLIA). Ferry and TBS vouchers appear by themselves once their reports are loaded in the engine.'); return; }
   const tot = list.filter(v => !v.off).reduce((a, v) => a + v.total, 0), bad = list.filter(v => !v.off && !v.ok).length, noNo = list.filter(v => !v.off && !v.doc).length;
   h += `<div class="stats">${stat('Vouchers', list.filter(v => !v.off).length)}${stat('Total payment', fmtC(tot), 'hl')}${stat('Not matching source', bad, bad ? 'bad' : '')}${stat('Without voucher no.', noNo, noNo ? 'bad' : '')}</div>`;
@@ -3627,7 +3628,7 @@ if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
     else if (a === 'pvxdel') { const x = ed(k).extra || []; x.splice(+b.dataset.i, 1); renderAll(); }
     else if (a === 'pvclr') { PV.bus = {}; PV.pro = {}; PV.klia = {}; PV.ed = {}; S.files = (S.files || []).filter(f => f.module !== 'V'); renderAll(); }
     else if (a === 'pvdl') { const l = pvList().filter(v => !v.off), miss = l.filter(v => !v.doc).length, bad = l.filter(v => !v.ok).length; if (miss) { toast(`${miss} voucher(s) have no voucher no. — type the start number`, 'bad'); return; } const noAcc = l.filter(v => v.lines.some(x => !x.acc) || !v.payee).map(v => v.P.label); if (noAcc.length) { toast(`Account code / payee missing for: ${[...new Set(noAcc)].join(', ')} — fill them in Cash Book codes (or untick those vouchers)`, 'bad'); return; } if (bad && !confirm(`${bad} voucher(s) do not match their settlement total. Download anyway?`)) return; await busy('Building Import CashBook…', async () => saveBlob(`IMPORT CASHBOOK PV ${typeof cuToday === 'function' ? cuToday() : pvYYMM(l[0].date)}.xlsx`, await pvXlsx(l))); }
-    else if (a === 'pvcopy') { const t = pvTsv(pvList(), b.dataset.v); try { await navigator.clipboard.writeText(t); toast(`${t.split('\n').length} ${b.dataset.v} rows copied — paste in column A of the first empty row`); } catch (er) { toast('Clipboard blocked by the browser', 'bad'); } }
+    else if (a === 'pvcopy') { const t = pvTsv(pvList(), b.dataset.v, !!b.dataset.h); try { await navigator.clipboard.writeText(t); toast(`${b.dataset.v}: header + ${t.split('\n').length - 1} rows copied (columns A–AQ) — in AutoCount click Paste from Clipboard`); } catch (er) { toast('Clipboard blocked by the browser', 'bad'); } }
   });
   document.addEventListener('change', e => {
     const t = e.target, a = t.dataset.act, k = t.dataset.k; if (!a || !/^pv/.test(a)) return;
@@ -5778,7 +5779,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v44';
+  const VER = 'v45';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5837,7 +5838,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v44';
+const SE_VER = 'v45';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
