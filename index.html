@@ -4165,7 +4165,18 @@ const ML_TPL0 = {
 const ML_PAGES = { OPPAY: ['OPPAY'], PRO: ['PRO_LKSA', 'PRO_SILK'], KLIA: ['KLIA'], KTMB: ['KTMB'], FERRY: ['MERSING', 'TG'], CASH: ['CASHLESS', 'SBST'] };
 // operator name in the report file → code in Bus Operators Summary (Bank in template CASHLESS); new ones are asked once and saved
 const ML_ALIAS0 = { 'GOPI': 'GOPI', 'GREEN TRANSIT LINER': 'GTL', 'LEAN HOCK BUS SDN BHD': 'LH', 'LEAN HOCK': 'LH', 'PERAK TRANSIT': 'PT', 'REDOMNI': 'RED OMNI', 'SP BUMI': 'SP BUMI', 'SOUTHERN': 'SOUTHERN OMNI', 'THE WAI THONG OMNIBUS': 'WAI THONG', 'WAWASAN SUTERA': 'WAWASAN', 'YOW HOE BUS': 'YHB', 'KR TRAVEL': 'KR', 'BLUE OMNI': 'BLUE OMNI', 'HUP SOON': 'HUPSOON', 'MUTIARA': 'MUTIARA' };
-const ML_KLIA0 = { ALM: { tag: 'ALM', v: 'DA', on: true }, EFX: { tag: 'EFX', v: 'BANK', on: true } };
+// subject tag = the operator code in the report file names, e.g. OPERATOR SETTLEMENT REPORT (GEMBIRACE) → [GEMBIRACE];
+// only ALM has a Debit Advice in the KLIA folder → ALM wording "debit advice attached", the rest "bank sends the advice"
+const ML_KLIA0 = { ALM: { tag: 'ALM', v: 'DA', on: true }, EFX: { tag: 'EFX', v: 'BANK', on: true }, 'CITY EXEC': { tag: 'GEMBIRACE' }, SAING: { tag: 'GEMBIRASAING' }, 'KLASS SERVIS': { tag: 'KLASSERVIS' } };
+// report code → Bus Operators Summary (TQMS KLIA) code
+const ML_KLIA_ALIAS = { GEMBIRACE: 'CITY EXEC', GEMBIRACESB: 'CITY EXEC', GEMBIRASAING: 'SAING', KLASSERVIS: 'KLASS SERVIS', KLASSSERVIS: 'KLASS SERVIS', EFXTRANSPORT: 'EFX' };
+function mlKliaOp(U) {
+  const m = /OPERATOR SETTLEMENT REPORT\s*\(([^)]+)\)|DEBIT ADVICE\s*-\s*([A-Z0-9 ]+?)\s+\d{6,8}|^([A-Z0-9 ]+?)\s+INTEGRATION\b/.exec(U);
+  const code = m ? mlKeyN(m[1] || m[2] || m[3]) : ''; if (!code) return '';
+  const ops = mlKops(), k = ML_KLIA_ALIAS[code.replace(/ /g, '')] || code;
+  const o = ops.find(o => mlKeyN(o.code) === k || mlKeyN(o.tag) === code || mlKeyN(o.code).replace(/ /g, '') === code.replace(/ /g, ''));
+  return o ? o.code : '';
+}
 
 const ML = { cfg: null, page: 'OPPAY', tsel: {}, d: {}, att: {}, kop: 'ALM', corp: {}, edit: {}, kon: {} };
 const mlPad = n => String(n).padStart(2, '0');
@@ -4258,8 +4269,9 @@ function mlRoute(name) {
   if ((m = /^CASHLESS\s+(.+?)\s+(\d{6})\s*-\s*(\d{6})$/.exec(U))) return { id: 'CASHLESS', op: m[1], date: mlD6(m[2]), date2: mlD6(m[3]) };
   if ((m = /^SBST\s*&?\s*MY30\s+(.+?)\s+(\d{6})\s*-\s*(\d{6})$/.exec(U))) return { id: 'SBST', op: m[1], date: mlD6(m[2]), date2: mlD6(m[3]) };
   if ((m = /OPERATOR\s*PAYMENT\s+(KT|MS)\s+([A-Z0-9]+)/.exec(U.replace(/OPERATORPAYMENT/, 'OPERATOR PAYMENT')))) return { id: 'OPPAY', op: m[2] };
-  const kop = mlKops().find(o => new RegExp(`(^|[^A-Z])(${mlKeyN(o.tag)}|${mlKeyN(o.code)})([^A-Z]|$)`).test(mlKeyN(U)));
-  if (/INTEGRATION|OPERATOR SETTLEMENT|TQMS|DEBIT ADVICE/.test(U) && kop) return { id: 'KLIA', op: kop.code };
+  if (/OPERATOR SETTLEMENT REPORT/.test(U) && /\bCOMPLETE\b/.test(U)) return { kind: 'skip', why: '“complete” copy — the plain report is the one emailed' };
+  const kc = /INTEGRATION|OPERATOR SETTLEMENT|TQMS|DEBIT ADVICE/.test(U) ? mlKliaOp(U) : '';
+  if (kc) return { id: 'KLIA', op: kc, klia: /OPERATOR SETTLEMENT REPORT/.test(U) };
   if (/OPERATOR SETTLEMENT|INTEGRATION|TQMS/.test(U)) return { id: 'KLIA' };
   return null;
 }
@@ -4282,7 +4294,7 @@ function mlKtDir(code) {
 function mlEmails(id) {
   const t = mlT(id), base = { id, cc: mlRcpt(t.cc), sig: t.sig }, att = ML.att[id] || [];
   if (t.per === 'klia') {
-    return mlKops().filter(o => (ML.kon[o.code] != null ? ML.kon[o.code] : (o.on || att.some(a => a.op === o.code)))).map(o => {
+    return mlKops().filter(o => (ML.kon[o.code] != null ? ML.kon[o.code] : (att.length ? att.some(a => a.op === o.code) : o.on))).map(o => {
       const n = +ML.corp[o.code] || 0, V = mlTokens(id, { OP: o.tag, CORP: n > 0 ? `Please note that ${n} corporate client${n === 1 ? ' has' : 's have'} been highlighted in the report for your further review.\n\n` : '' });
       const need = [['OPERATOR SETTLEMENT', 'OPERATOR SETTLEMENT REPORT ….xlsx'], ...(o.v === 'DA' ? [['DEBIT ADVICE', `Debit Advice - ${o.tag} ….pdf`]] : [])];
       return { ...base, key: 'KLIA:' + o.code, op: o.code, title: `${o.tag} · ${o.name}`, to: mlRcpt(o.to), subject: mlFill(t.subject, V), text: mlFill(o.v === 'BANK' ? t.body2 : t.body, V), att: att.filter(a => a.op === o.code), need };
@@ -4403,6 +4415,20 @@ async function mlReadBos(file) {
   });
   await mlSave(); return rep;
 }
+// OPERATOR SETTLEMENT REPORT (X): period from its header ("19 Nov 2026 12:00:00 AM - 20 Nov 2026 12:00:00 AM") and the
+// corporate clients = trip rows highlighted in the report (fill FDEADA — 40 in ALM 19112026, as in your ALM email)
+const mlCellTxt = c => { const v = c && c.value; if (v == null) return ''; if (typeof v !== 'object') return String(v); if (v instanceof Date) return v.toISOString(); if (v.richText) return v.richText.map(x => x.text).join(''); if (v.text != null) return String(v.text); if (v.result != null) return String(v.result); return ''; };
+async function mlKliaRead(a) {
+  const wb = new ExcelJS.Workbook(); await wb.xlsx.load(a.buf.slice(0)); const ws = wb.worksheets[0]; if (!ws) return;
+  let per = null, n = 0;
+  ws.eachRow((row, r) => {
+    if (r <= 6 && !per) row.eachCell(c => { const t = mlCellTxt(c); const m = /(\d{1,2}) (\w{3}) (\d{4}) 12:00:00 AM\s*-\s*(\d{1,2}) (\w{3}) (\d{4}) 12:00:00 AM/i.exec(t); if (m) per = [m.slice(1, 4), m.slice(4, 7)]; });
+    if (r > 4 && typeof row.getCell(2).value === 'number') { let hl = false; row.eachCell(c => { const f = c.fill; if (f && f.fgColor && /FDEADA$/i.test(f.fgColor.argb || '')) hl = true; }); if (hl) n++; }
+  });
+  const md = p => { const mi = mlMonT.findIndex(x => x.toLowerCase() === p[1].slice(0, 3).toLowerCase()); return mi < 0 ? null : new Date(+p[2], mi, +p[0]); };
+  if (per) { const d1 = md(per[0]), d2 = md(per[1]); if (d1 && d2) { ML.d.KLIA = { a: mlIso(d1), b: mlIso(d2) }; } }
+  if (a.op) ML.corp[a.op] = n || '';
+}
 async function mlAddFiles(files, quiet) {
   const went = {}, skip = [];
   const curId = () => ML.tsel[ML.page] || (ML_PAGES[ML.page] || [])[0];
@@ -4423,6 +4449,7 @@ async function mlAddFiles(files, quiet) {
     const D = mlDates(id);
     if (r.date) { const iso = mlIso(r.date), iso2 = r.date2 ? mlIso(r.date2) : ''; if (!ML.att[id].some(x => x !== a && x.dset)) { D.a = iso; D.b = iso2; } else { if (iso < D.a) D.a = iso; if (iso2 && iso2 > (D.b || '')) D.b = iso2; if (!iso2 && iso > (D.b || D.a)) D.b = iso; } a.dset = true; }
     if (r.day) { const t = mlToday(); let d = new Date(t.getFullYear(), t.getMonth(), r.day); if (d > t) d = new Date(t.getFullYear(), t.getMonth() - 1, r.day); const iso = mlIso(d); if (!ML.att[id].some(x => x !== a && x.dset)) { D.a = iso; D.b = iso; } else { if (iso < D.a) D.a = iso; if (iso > (D.b || D.a)) D.b = iso; } a.dset = true; }
+    if (r.klia && /\.xlsx$/i.test(f.name) && typeof ExcelJS !== 'undefined') { try { await mlKliaRead(a); } catch (er) { } }
     went[id] = (went[id] || 0) + 1;
   }
   if (quiet) return { went, skip };
@@ -4488,7 +4515,7 @@ function mlKliaTable() {
   const att = ML.att.KLIA || [];
   return `<section class="card"><h3>KLIA operators</h3><p class="hint">Tick who gets an email. Emails from Bus Operators Summary (TQMS KLIA) — ALM as in your email. A file whose name has the operator tag / code attaches to that operator by itself; other files go to the operator chosen in “Drop to”.</p>
   <div class="scroll"><table class="t dense"><tr><th></th><th>Code</th><th>Subject tag</th><th>Company</th><th>To</th><th>Wording</th><th class="r">Corporate clients highlighted</th><th>Files</th><th>Drop to</th></tr>
-  ${mlKops().map(o => { const on = ML.kon[o.code] != null ? ML.kon[o.code] : (o.on || att.some(a => a.op === o.code)); return `<tr>
+  ${mlKops().map(o => { const on = ML.kon[o.code] != null ? ML.kon[o.code] : (att.length ? att.some(a => a.op === o.code) : o.on); return `<tr>
     <td><input type="checkbox" data-act="mlkon" data-c="${esc(o.code)}"${on ? ' checked' : ''}></td><td><b>${esc(o.code)}</b></td>
     <td><input class="in" style="width:90px" data-act="mlkop" data-c="${esc(o.code)}" data-f="tag" value="${esc(o.tag)}"></td><td>${esc(o.name)}</td>
     <td><input class="in" style="min-width:300px" data-act="mlkto" data-c="${esc(o.code)}" value="${esc(o.to)}" placeholder="email; Name <email>"></td>
@@ -4548,8 +4575,11 @@ let ML_HF = null;
   handleFiles = async function (list) {
     const arr = [...list];
     if (S.tab === 'Q' && ML_PAGES[ML.page]) { await mlAddFiles(arr); return; }
-    const isMail = f => (/\.pdf$/i.test(f.name) && (mlRoute(f.name) || {}).id) || /^Reports\b.*\.zip$/i.test(f.name);
-    const mail = arr.filter(isMail), rest = arr.filter(f => !mail.includes(f));
+    // KLIA operator reports / integration / debit advice: on Import Cashbook they make the PV, everywhere else they are email attachments
+    const isMail = f => { const r = mlRoute(f.name) || {}; if (/^Reports\b.*\.zip$/i.test(f.name)) return true; if (r.id === 'KLIA' || (r.kind === 'skip' && /OPERATOR SETTLEMENT/i.test(f.name))) return S.tab !== 'V'; return /\.pdf$/i.test(f.name) && !!r.id; };
+    const isRaw = async f => { if (!/\.xlsx$/i.test(f.name) || typeof ExcelJS === 'undefined') return false; try { const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await f.arrayBuffer()); let raw = false; const ws = wb.worksheets[0]; if (ws) ws.eachRow((row, r) => { if (r <= 15) row.eachCell(c => { if (/^\s*Company\s*:/i.test(mlCellTxt(c))) raw = true; }); }); return raw; } catch (e) { return false; } };
+    const mail = []; for (const f of arr) if (isMail(f) && !(await isRaw(f))) mail.push(f);
+    const rest = arr.filter(f => !mail.includes(f));
     if (rest.length) await ML_HF(rest);
     if (mail.length) { S.tab = 'Q'; ML.page = S.qMail = ''; await mlAddFiles(mail); }
   };
@@ -6347,7 +6377,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v54';
+  const VER = 'v55';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6406,7 +6436,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v54';
+const SE_VER = 'v55';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
