@@ -3303,6 +3303,33 @@ function pvChargeName(name) {
   return (base + (m ? ' ' + m.toUpperCase() : '')).trim();
 }
 
+/* ---------------- charge columns on a Daily Settlement (RFID, TOS / manual pick-up, barrier gate, …) ----------------
+   Rules from the posted vouchers 2024–2025 (Import CashBook history):
+   - RFID → contra (326-MS01: 61 of 72 lines), one line for all companies: "SALES [..] - RFID JUN'25"
+   - Compensation for barrier gate → contra, one line per company: "SALES [..] - COMPENSATION FOR BARRIER GATE AT TERMINAL MELAKA SENTRAL (KEMB55)"
+   - TOS / manual pick-up charges (KT) → contra 326-KT01: "MANUAL PICK UP CHARGES [..]" (142 TOS lines on 326-KT01 in 2024)
+   - Manual trip → temporary control (325-TM01: 48 of 59 lines): "SALES [..] - MANUAL TRIP JUL'25"
+   - month-end: the charge sits on the current-month range (MSM2TPV01/2506: "SALES [01/06/2025 - 02/06/2025] - RFID MAY'25") */
+const pvMonC = name => { const m = typeof chMonth === 'function' ? chMonth(name) : ''; return m ? m.toUpperCase().replace(/'\s+/, "'") : ''; };
+function pvChargeKind(name) { const t = String(name || '').toUpperCase(); return /BARRIER|COMPENSAT/.test(t) ? 'barrier' : /RFID/.test(t) ? 'rfid' : /MANUAL\s*TRIP/.test(t) ? 'trip' : /\bTOS\b|PICK\s*UP|PICKUP/.test(t) ? 'tos' : 'other'; }
+function pvChargeLines(P, MS, name, vals, rc) {
+  const k = pvChargeKind(name), mon = pvMonC(name), out = [], tot = vals.reduce((a, x) => a + x.v, 0);
+  const d = lbl => MS ? `SALES [${rc}] - ${lbl}` : `${lbl} [${rc}]`;
+  if (k === 'barrier') {
+    const by = {}; vals.forEach(x => { if (x.v) by[x.co] = (by[x.co] || 0) + x.v; });
+    Object.keys(by).sort().forEach(co => out.push({ ...pvL(P.contra, d(`COMPENSATION FOR BARRIER GATE AT TERMINAL ${P.accD} (${co})`), by[co], P.contraD), why: 'Barrier gate → contra, per company (past MS / KS vouchers)' }));
+    return out;
+  }
+  if (!tot) return out;
+  const lbl = k === 'rfid' ? `RFID${mon ? ' ' + mon : ''}` : k === 'tos' ? `MANUAL PICK UP CHARGES${mon ? ' ' + mon : ''}` : k === 'trip' ? `MANUAL TRIP${mon ? ' ' + mon : ''}` : pvChargeName(name).replace(/'\s+(\d\d)\b/, "'$1");
+  const acc = k === 'trip' ? P.temp : P.contra, accD = k === 'trip' ? P.tempD : P.contraD;
+  const x = { ...pvL(acc, d(lbl), tot, accD), why: { rfid: 'RFID → contra (61 of 72 past lines)', tos: 'TOS / manual pick-up → contra (past KT / KS vouchers)', trip: 'Manual trip → temporary control (48 of 59 past lines)', other: 'New charge type — posted to contra; check the account' }[k] };
+  if (k === 'other') x.w = `"${name}" is a charge type not seen in past vouchers — posted to ${acc}, check it`;
+  else if (tot > 0) x.w = `${lbl} is a refund (+${fmtC(tot)}) — past refunds of one operator's charge were posted to the temporary control account; check`;
+  out.push(x);
+  return out;
+}
+
 /* ---------------- readers: completed files ---------------- */
 const pvTxt = v => v == null ? '' : v instanceof Date ? dmyStr(fromJsDate(v)) : clean(typeof v === 'object' ? (v.text || v.result || '') : v);
 // DAILY SETTLEMENT KT / MS (the finished file, as signed off)
@@ -3387,12 +3414,13 @@ function pvBusVoucher(s) {
   const span = rs => { const d = rs.map(r => r.date).sort((a, b) => dKey(a) - dKey(b)); return d.length ? rangeText(d[0], d[d.length - 1]) : ''; };
   const sum = (rs, f) => rs.reduce((a, r) => a + f(r), 0), lines = [], warn = [];
   if (prev.length) lines.push(pvL(P.temp, `SALES [${span(prev)}]`, sum(prev, r => r.final - r.under), P.tempD));
+  if (prev.length) s.adjNames.forEach((n, j) => { const v = sum(prev, r => r.adj[j] || 0); if (v) warn.push(`${n} ${fmtC(v)} on ${span(prev)} is inside the ${P.temp} net (previous-month days are posted net, like terminal / pick-up charges)`); });
   const rc = span(cur);
   if (cur.length) {
     lines.push(pvL(P.acc, `SALES [${rc}]`, sum(cur, r => r.sales), P.accD));
     const ch = (lbl, v) => { if (v) lines.push(pvL(P.contra, MS ? (lbl === 'TERMINAL CHARGES' ? `TERMINAL CHARGES [${rc}]` : `SALES [${rc}] - ${lbl}`) : `${lbl} [${rc}]`, v, P.contraD)); };
     ch('TERMINAL CHARGES', sum(cur, r => r.term)); ch('PICK UP CHARGES', sum(cur, r => r.pick)); ch('PARKING CHARGES', sum(cur, r => r.park));
-    s.adjNames.forEach((n, j) => ch(pvChargeName(n), sum(cur, r => r.adj[j] || 0)));
+    s.adjNames.forEach((n, j) => pvChargeLines(P, MS, n, cur.map(r => ({ co: r.co, v: r.adj[j] || 0 })), rc).forEach(x => { lines.push(x); if (x.w) warn.push(x.w); }));
   }
   // undersales: the payee keeps a company's negative day (new, +) and NSS recovers older ones (−) — through the temporary control account
   const negDays = co => s.rows.filter(r => r.co === co && r.final < 0).map(r => r.date).sort((a, b) => dKey(a) - dKey(b));
@@ -3434,7 +3462,14 @@ function pvFerryVouchers() {
     const C = computeC(st); if (!C) return;
     const name = clean((R.labels && R.labels[st]) || st).toUpperCase(), key = Object.keys(PV_DEF).find(k => norm(k) === norm(name)) || name;
     const P = pvP(key) || { ...PV_DEF.MERSING, label: name, payee: '', proj: '', acc: '', contra: '', temp: '', accD: name, contraD: `CONTRA ACCOUNT [${name}]` };
-    const r = rangeText(C.from, C.to), lines = [pvL(P.acc, `SALES [${r}]`, C.gOn.tot, P.accD), pvL(P.contra, `COMMISSION ONLINE ${name} [${r}]`, C.gOn.comm + C.gOn.sc, P.contraD), pvL(P.contra, `COMMISSION MDR ${name} [${r}]`, C.gOn.mdr + C.gOn.sm, P.contraD), pvL(P.contra, `COMMISSION AGENT ${name} [${r}]`, -C.gAg.tot, P.contraD)].filter(x => x.amtC);
+    // month-end: previous-month days go net to the temporary control account (same as the bus terminals / Prolintas / KLIA)
+    const r = rangeText(C.from, C.to), inCur = d => pvMk(d) === pvMk(C.to), act = x => x.t > 0, dOn = C.don.filter(x => act(x) && inCur(x.d)), dAg = C.dag.filter(x => act(x) && inCur(x.d));
+    const pOn = C.don.filter(x => act(x) && !inCur(x.d)), pAg = C.dag.filter(x => act(x) && !inCur(x.d)), sm = (a, f) => a.reduce((t, x) => t + f(x), 0);
+    const rc = dOn.length || dAg.length ? (() => { const ds = [...dOn, ...dAg].map(x => x.d).sort((a, b) => dKey(a) - dKey(b)); return rangeText(ds[0], ds[ds.length - 1]); })() : r;
+    const lines = [];
+    if (pOn.length || pAg.length) { const ds = [...pOn, ...pAg].map(x => x.d).sort((a, b) => dKey(a) - dKey(b)); lines.push(pvL(P.temp, `SALES [${rangeText(ds[0], ds[ds.length - 1])}]`, sm(pOn, x => x.net) - sm(pAg, x => x.tot), P.tempD)); }
+    lines.push(pvL(P.acc, `SALES [${rc}]`, sm(dOn, x => x.tot), P.accD), pvL(P.contra, `COMMISSION ONLINE ${name} [${rc}]`, sm(dOn, x => x.comm + x.sc), P.contraD), pvL(P.contra, `COMMISSION MDR ${name} [${rc}]`, sm(dOn, x => x.mdr + x.sm), P.contraD), pvL(P.contra, `COMMISSION AGENT ${name} [${rc}]`, -sm(dAg, x => x.tot), P.contraD));
+    for (let i = lines.length - 1; i >= 0; i--) if (!lines[i].amtC) lines.splice(i, 1);
     const warn = [];
     if (C.rec > 0) { lines.push(pvL(P.temp, `UNDERSALES RECOVERED [${r}]`, -C.rec, P.tempD)); warn.push(`Recovers ${fmtC(C.rec)} of earlier under-settlement (tracker)`); }
     if (C.nu > 0) warn.push(`NET is short by ${fmtC(C.nu)} — under-settlement goes to the tracker, nothing to pay`);
@@ -3579,7 +3614,7 @@ function pvCard(v) {
   <table class="t dense pvpay"><tr><th>Payment Method</th><th class="r">Payment Amount</th><th class="r">Bank Charge</th><th>Payment By</th><th class="r">Float</th></tr>
   <tr><td>${esc(v.P.pm)}</td><td class="r"><b>${money(v.total)}</b></td><td class="r"><input class="in r" data-act="pvbc" data-k="${id}" value="${(v.bc / 100).toFixed(2)}" size="6"></td><td>${esc(v.P.by)}</td><td class="r">${v.P.float || 2}</td></tr></table>
   <table class="t dense pvl"><tr><th>Acc. No.</th><th>Account Desc.</th><th>Description</th><th class="r">Amount</th><th>Proj. No.</th><th></th></tr>
-  ${v.lines.map((l, i) => `<tr class="${l.manual ? 'man' : ''}"><td class="${l.acc ? '' : 'miss'}">${esc(l.acc || 'set code')}</td><td class="muted">${esc(l.accD || '')}</td><td>${l.manual ? esc(l.desc) : `<input class="in w" data-act="pvld" data-k="${id}" data-i="${i}" value="${esc(l.desc)}">`}</td><td class="r ${l.amtC < 0 ? 'neg' : ''}">${l.manual ? money(l.amtC) : `<input class="in r" data-act="pvla" data-k="${id}" data-i="${i}" value="${(l.amtC / 100).toFixed(2)}" size="10">`}</td><td>${esc(v.P.proj || '')}</td><td>${l.manual ? `<button class="x" data-act="pvxdel" data-k="${id}" data-i="${i - (v.lines.length - (e.extra || []).length)}" title="Remove">×</button>` : ''}</td></tr>`).join('')}
+  ${v.lines.map((l, i) => `<tr class="${l.manual ? 'man' : ''}"><td class="${l.acc ? '' : 'miss'}" title="${esc(l.why || '')}">${esc(l.acc || 'set code')}</td><td class="muted">${esc(l.accD || '')}</td><td>${l.manual ? esc(l.desc) : `<input class="in w" data-act="pvld" data-k="${id}" data-i="${i}" value="${esc(l.desc)}">`}</td><td class="r ${l.amtC < 0 ? 'neg' : ''}">${l.manual ? money(l.amtC) : `<input class="in r" data-act="pvla" data-k="${id}" data-i="${i}" value="${(l.amtC / 100).toFixed(2)}" size="10">`}</td><td>${esc(v.P.proj || '')}</td><td>${l.manual ? `<button class="x" data-act="pvxdel" data-k="${id}" data-i="${i - (v.lines.length - (e.extra || []).length)}" title="Remove">×</button>` : ''}</td></tr>`).join('')}
   <tr class="add"><td><select class="in" data-pvacc="${id}">${[['acc', v.P.acc], ['contra', v.P.contra], ['temp', v.P.temp]].filter(x => x[1]).map(([k, a]) => `<option value="${k}">${esc(a)}</option>`).join('')}</select></td><td colspan="2"><input class="in w" data-pvdesc="${id}" placeholder="Manual line, e.g. ${esc(v.desc)} - [TNAHGBL]"></td><td class="r"><input class="in r" data-pvamt="${id}" placeholder="-0.00" size="10"></td><td colspan="2"><button class="btn sm" data-act="pvxadd" data-k="${id}">+ Line</button></td></tr></table>
   <div class="pvfoot"><div>${v.warn.map(w => `<span class="pill warnp">${esc(w)}</span>`).join(' ')}</div>
   <div class="pvtot"><span>Net Total <b>${money(v.total)}</b></span>${v.manC ? `<span class="muted">incl. manual lines ${money(v.manC)}</span>` : ''}${v.srcBank != null ? `<span class="${bad ? 'bad' : 'ok'}">${esc(v.srcLbl)} ${money(v.srcBank)} ${bad ? `· differs ${money(diff)}` : '✓'}</span>` : ''}</div></div></section>`;
@@ -3588,6 +3623,18 @@ function pvCodes() {
   const c = pvCfg(), f = [['label', 'Project'], ['series', 'Series'], ['payee', 'Pay To (DealWith)'], ['proj', 'Proj. No.'], ['acc', 'Sales acc.'], ['contra', 'Contra acc.'], ['temp', 'Temp. control acc.'], ['pm', 'Payment method'], ['by', 'Payment by'], ['bc', 'Bank charge']];
   return `<section class="card"><h3>Account codes per project</h3><p class="hint">Defaults come from your posted vouchers (Import CashBook history and AutoCount). Empty = not found in your files — fill it before importing.</p>
   <div class="scroll"><table class="t dense"><tr>${f.map(x => `<th>${x[1]}</th>`).join('')}<th>Loan acc.</th></tr>${Object.keys(c.p).map(k => `<tr>${f.map(([fk]) => fk === 'label' ? `<td><b>${esc(c.p[k].label)}</b></td>` : `<td><input class="in${c.p[k][fk] === '' && fk !== 'bc' ? ' miss' : ''}" data-act="pvcf" data-p="${esc(k)}" data-f="${fk}" value="${esc(c.p[k][fk])}" size="${fk === 'payee' ? 30 : fk === 'bc' ? 5 : 11}"></td>`).join('')}<td>${k === 'KLIA' ? `<input class="in" data-act="pvcf" data-p="KLIA" data-f="loan" value="${esc(c.p.KLIA.loan)}" size="9">` : ''}</td></tr>`).join('')}</table></div></section>
+  <section class="card"><h3>Posting rules (taken from your posted vouchers)</h3><table class="t dense"><tr><th>Item on the settlement</th><th>Account</th><th>Description</th><th>Evidence</th></tr>
+  <tr><td>Sales (current-month days)</td><td>Sales acc. (325-MS01 / 325-KT01 …)</td><td>SALES [range]</td><td>all vouchers</td></tr>
+  <tr><td>Terminal / pick-up / parking</td><td>Contra (326-…)</td><td>MS: TERMINAL CHARGES [..] · SALES [..] - PICK UP CHARGES · KT: PICK UP CHARGES [..]</td><td>MSM2TPV / M1TPV 2611</td></tr>
+  <tr><td>RFID charges</td><td>Contra</td><td>MS: SALES [..] - RFID OCT'26 · KT: RFID OCT'26 [..] — one line for all companies</td><td>61 of 72 past RFID lines on 326-MS01</td></tr>
+  <tr><td>TOS / manual pick-up charges</td><td>Contra</td><td>KT: MANUAL PICK UP CHARGES OCT'26 [..]</td><td>142 TOS lines on 326-KT01 (2024)</td></tr>
+  <tr><td>Compensation for barrier gate</td><td>Contra, <b>one line per company</b></td><td>SALES [..] - COMPENSATION FOR BARRIER GATE AT TERMINAL MELAKA SENTRAL (KEMB55)</td><td>56 past lines on 326-MS01 / 326-KS01</td></tr>
+  <tr><td>Manual trip</td><td>Temporary control (325-TM…)</td><td>SALES [..] - MANUAL TRIP OCT'26</td><td>48 of 59 past lines on 325-TM01</td></tr>
+  <tr><td>New undersales (+) / recovered undersales (−)</td><td>Temporary control</td><td>MS: SALES [d] - UNDERSALES [CO] · KT: UNDERSALES [d] - [CO]</td><td>MSM2TPV08/2611, M1TPV66/2611</td></tr>
+  <tr><td>Any other new charge column</td><td>Contra — flagged for you to check</td><td>name of the column</td><td>no past example</td></tr>
+  <tr><td><b>Month-end</b> (period crosses into a new month)</td><td>Previous-month days: one line, <b>net</b>, to temporary control. Current-month days: gross with their charges</td><td>SALES [30/10/2026 - 31/10/2026] (net) · charges keep the current-month range, e.g. SALES [01/06/2025 - 02/06/2025] - RFID MAY'25</td><td>MSM2TPV01/2611, M1TPV01/03/04/2611, M3TPV01/2611, MSM2TPV01/2506</td></tr>
+  <tr><td>KLIA month-end</td><td>Previous-month days net to 325-TM13; loan deduction on the whole period</td><td>DEDUCTION LOAN SETTLEMENT OCT' 26  [30/10/2026 - 01/11/2026]</td><td>M3TPV01/03/2611</td></tr></table>
+  <p class="hint">A refund (a charge column adding money back) is flagged: past refunds to one operator went to the temporary control account. Hover an account in a voucher to see why it was chosen.</p></section>
   <section class="card"><h3>KLIA operators → AutoCount payee</h3><table class="t dense"><tr><th>Code in report</th><th>Pay To</th></tr>${Object.entries(c.kops).map(([k, v]) => `<tr><td>${esc(k)}</td><td><input class="in w" data-act="pvkop" data-o="${esc(k)}" value="${esc(v)}"></td></tr>`).join('')}</table></section>`;
 }
 EXT.render.V = function renderV() {
@@ -5779,7 +5826,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v45';
+  const VER = 'v46';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -5838,7 +5885,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v45';
+const SE_VER = 'v46';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
