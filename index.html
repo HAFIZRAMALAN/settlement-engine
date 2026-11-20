@@ -4350,10 +4350,10 @@ async function mlOpen(list) {
     let ok = 0; const nf = [], err = [];
     await busy(`Putting ${list.length} email${list.length > 1 ? 's' : ''} into Outlook…`, async () => {
       for (let i = 0; i < list.length; i++) {
-        try { const r = await (await fetch(ML_HELPER + '/draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mlPayload(list[i], i === list.length - 1)) })).json(); if (r.ok) { ok++; (r.notFound || []).forEach(x => nf.push(x)); } else err.push(r.error); } catch (er) { err.push(er.message); }
+        try { const r = await (await fetch(ML_HELPER + '/draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mlPayload(list[i], list.length === 1 && mlCfg().popup !== false ? 'classic' : i === list.length - 1)) })).json(); if (r.ok) { ok++; (r.notFound || []).forEach(x => nf.push(x)); } else err.push(r.error); } catch (er) { err.push(er.message); }
       }
     });
-    toast([ok ? `${ok} draft${ok > 1 ? 's' : ''} in Outlook → Drafts (FINANCE - NSS IT). Open it and press Send.` : '', nf.length ? `Outlook could not find: ${[...new Set(nf)].join(', ')}` : '', err.length ? 'Error: ' + err[0] : ''].filter(Boolean).join(' · '), err.length || nf.length ? 'bad' : 'ok');
+    toast([ok ? (list.length === 1 && mlCfg().popup !== false ? 'Email opened in Outlook — check it and press Send (also kept in Drafts).' : `${ok} draft${ok > 1 ? 's' : ''} in Outlook → Drafts (FINANCE - NSS IT). Open each and press Send.`) : '', nf.length ? `Outlook could not find: ${[...new Set(nf)].join(', ')}` : '', err.length ? 'Error: ' + err[0] : ''].filter(Boolean).join(' · '), err.length || nf.length ? 'bad' : 'ok');
     return;
   }
   for (const e of list) { saveBlobRaw(mlFile(e), mlEml(e)); if (list.length > 1) await new Promise(r => setTimeout(r, 500)); }
@@ -4477,8 +4477,11 @@ function mlSettings() {
   <table class="t dense"><tr><th>Key</th><th>Bold part</th><th>Italic part</th><th>Italic bold</th><th>Banner</th></tr>
   ${Object.entries(c.sig).map(([k, s]) => `<tr><td><b>${k}</b></td><td><input class="in" data-act="mlsig" data-k="${k}" data-f="a" value="${esc(s.a)}"></td><td><input class="in" data-act="mlsig" data-k="${k}" data-f="b" value="${esc(s.b)}"></td><td><input type="checkbox" data-act="mlsig" data-k="${k}" data-f="bb"${s.bb ? ' checked' : ''}></td><td><input type="checkbox" data-act="mlsig" data-k="${k}" data-f="img"${s.img ? ' checked' : ''}></td></tr>`).join('')}</table>
   <div class="mlpaper" style="margin-top:10px">${mlSigHtml('DEPT', mlImgData())}</div></section>
+  <section class="card"><h3>When I press “Open in Outlook”</h3>
+  <label class="mlrow"><span>One email</span><select class="in" data-act="mlpop"><option value="1"${c.popup !== false ? ' selected' : ''}>Pop up as a New mail window, ready to Send (Outlook classic window)</option><option value="0"${c.popup === false ? ' selected' : ''}>Put it in Drafts and bring New Outlook to the front</option></select></label>
+  <p class="hint">“Open all” (Cashless, SBST, KLIA…) always goes to Drafts, so you check them one by one instead of getting many windows at once.</p></section>
   <section class="card"><h3>How “Open in Outlook” works</h3><ol class="hint" style="margin:0;padding-left:18px">
-  <li>Press <b>✉ Open in Outlook</b>: the email goes straight into <b>Outlook → Drafts</b> of FINANCE - NSS IT (From, To, Cc, subject, wording, signature, attachments) and Outlook comes to the front. Open the draft at the top and press <b>Send</b>. Nothing is ever sent by the engine.</li>
+  <li>Press <b>✉ Open in Outlook</b>: one email pops up as a <b>New mail</b> from FINANCE - NSS IT (To, Cc, subject, wording, signature, attachments) — press <b>Send</b>. <b>Open all</b> puts every email in <b>Drafts</b>. Nothing is ever sent by the engine.</li>
   <li>This needs the small <b>Outlook Helper</b> running on this PC: double-click <b>OUTLOOK HELPER</b> on the Desktop once (it starts by itself with Windows). Status: <span class="ml-hs pill">checking…</span></li>
   <li>You can still change anything in Outlook before sending.</li></ol></section>`;
 }
@@ -4538,6 +4541,7 @@ let ML_HF = null;
     else if (a === 'mlkon') ML.kon[t.dataset.c] = t.checked;
     else if (a === 'mlkdrop') ML.kop = t.dataset.c;
     else if (a === 'mlcorp') { ML.corp[t.dataset.c] = t.value; ML.edit = {}; }
+    else if (a === 'mlpop') { c.popup = t.value === '1'; await mlSave(); }
     else if (a === 'mlfrom') { c.from[t.dataset.f] = t.value.trim(); await mlSave(); }
     else if (a === 'mlppl') { const v = t.value.trim(); if (t.dataset.f === 'email' && v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { toast('Invalid email: ' + v, 'bad'); return; } c.people[+t.dataset.i][t.dataset.f] = v; await mlSave(); }
     else if (a === 'mlsig') { const s = c.sig[t.dataset.k]; s[t.dataset.f] = t.type === 'checkbox' ? t.checked : t.value; await mlSave(); }
@@ -6287,7 +6291,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v49';
+  const VER = 'v50';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6346,7 +6350,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v49';
+const SE_VER = 'v50';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
