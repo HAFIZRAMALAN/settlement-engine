@@ -4416,12 +4416,12 @@ function mlTplEditor(id) {
   const t = mlT(id), sigs = mlCfg().sig, ed = !!mlCfg().tpl[id];
   const ta = (f, rows, ph) => `<textarea class="in mlta" rows="${rows}" data-act="mltpl" data-id="${id}" data-f="${f}" placeholder="${esc(ph || '')}">${esc(t[f] || '')}</textarea>`;
   return `<details class="card mled"${ML.open === id ? ' open' : ''} data-mlopen="${id}"><summary><b>Edit template · ${esc(t.name)}</b> <span class="muted">(To, Cc, subject, wording, signature — saved for next time)</span>${ed ? ' <span class="pill">edited</span>' : ''}</summary>
-  ${t.per ? `<p class="hint">To comes from the operator (${t.per === 'kt' ? 'KT email directory — Email · Kuala Terengganu' : t.per === 'klia' ? 'operator table above' : 'Bus Operators Summary · Bank in template CASHLESS — drop a newer file to update'}).</p>` : `<label class="fld mlf">To${ta('to', 2, 'Name <email>; email; …')}</label>`}
-  <label class="fld mlf">Cc${ta('cc', 2, 'Name <email>; Name (from contacts); …')}</label>
-  <label class="fld mlf">Subject<input class="in" style="width:100%" data-act="mltpl" data-id="${id}" data-f="subject" value="${esc(t.subject)}"></label>
-  <label class="fld mlf">${id === 'KLIA' ? 'Wording — debit advice attached (e.g. ALM)' : 'Wording'}${ta('body', 10)}</label>
-  ${id === 'KLIA' ? `<label class="fld mlf">Wording — bank sends the payment advice (e.g. EFX)${ta('body2', 10)}</label>` : ''}
-  <label class="fld">Signature <select class="in" data-act="mltpl" data-id="${id}" data-f="sig">${Object.keys(sigs).map(k => `<option value="${k}"${k === t.sig ? ' selected' : ''}>${esc((sigs[k].a + (sigs[k].b || '')).replace(/\s+/g, ' '))}</option>`).join('')}</select></label>
+  ${t.per ? `<p class="hint">To comes from the operator (${t.per === 'kt' ? 'KT email directory — Email · Kuala Terengganu' : t.per === 'klia' ? 'operator table above' : 'Bus Operators Summary · Bank in template CASHLESS — drop a newer file to update'}).</p>` : `<label class="mlrow"><span>To</span>${ta('to', 2, 'Name <email>; email; …')}</label>`}
+  <label class="mlrow"><span>Cc</span>${ta('cc', 2, 'Name <email>; Name (from contacts); …')}</label>
+  <label class="mlrow"><span>Subject</span><input class="in" data-act="mltpl" data-id="${id}" data-f="subject" value="${esc(t.subject)}"></label>
+  <label class="mlrow"><span>${id === 'KLIA' ? 'Wording<small>debit advice attached (e.g. ALM)</small>' : 'Wording'}</span>${ta('body', 14)}</label>
+  ${id === 'KLIA' ? `<label class="mlrow"><span>Wording<small>bank sends the payment advice (e.g. EFX)</small></span>${ta('body2', 14)}</label>` : ''}
+  <label class="mlrow"><span>Signature</span><select class="in" data-act="mltpl" data-id="${id}" data-f="sig">${Object.keys(sigs).map(k => `<option value="${k}"${k === t.sig ? ' selected' : ''}>${esc((sigs[k].a + (sigs[k].b || '')).replace(/\s+/g, ' '))}</option>`).join('')}</select></label>
   <p class="hint">Blank line = new paragraph. Filled automatically: <code>{DATE}</code> <code>{FROM}</code> <code>{TO}</code> <code>{DATES}</code> (17/11/2026 &amp; 18/11/2026) <code>{DMON}</code> (18 NOV' 2026) <code>{K1}</code> <code>{K2}</code> (18.11.26) <code>{L1}</code> <code>{L2}</code> (18 Nov 2026)${id === 'KLIA' ? ' <code>{OP}</code> (operator tag) <code>{CORP}</code> (corporate-clients sentence, only when the number &gt; 0)' : ''}.</p>
   <button class="btn" data-act="mlreset" data-id="${id}">Back to the original wording</button></details>`;
 }
@@ -4448,7 +4448,7 @@ function mlKliaTable() {
 function mlSettings() {
   const c = mlCfg();
   return `<section class="card"><h3>Sender</h3><p class="hint">Every draft is From this mailbox. If Outlook shows another From, pick <b>${esc(c.from.email)}</b> in the From box.</p>
-  <div class="row"><label class="fld">Name<input class="in" style="min-width:320px" data-act="mlfrom" data-f="name" value="${esc(c.from.name)}"></label><label class="fld">Email<input class="in" style="min-width:280px" data-act="mlfrom" data-f="email" value="${esc(c.from.email)}"></label></div></section>
+  <div class="mlgrid"><label class="mlrow"><span>Name</span><input class="in" data-act="mlfrom" data-f="name" value="${esc(c.from.name)}"></label><label class="mlrow"><span>Email</span><input class="in" data-act="mlfrom" data-f="email" value="${esc(c.from.email)}"></label></div></section>
   <section class="card"><h3>Contacts <span class="pill">${c.people.filter(p => p.email).length}/${c.people.length} with email</span></h3><p class="hint">Names used in To / Cc without an address. Your screenshots show only the names of these colleagues — type each email once (red = still missing; the draft leaves them out until filled).</p>
   <table class="t dense"><tr><th>Name (as written in To / Cc)</th><th>Email</th><th></th></tr>
   ${c.people.map((p, i) => `<tr class="${p.email ? '' : 'rneg'}"><td><input class="in" style="min-width:280px" data-act="mlppl" data-i="${i}" data-f="name" value="${esc(p.name)}"></td><td><input class="in" style="min-width:280px" data-act="mlppl" data-i="${i}" data-f="email" value="${esc(p.email)}" placeholder="name@gohub.com.my"></td><td><button class="btn" data-act="mlpdel" data-i="${i}" title="Delete">🗑</button></td></tr>`).join('')}
@@ -4535,7 +4535,7 @@ let ML_HF = null;
   .mlatt button{border:0;background:none;cursor:pointer;color:var(--mut);font-size:1rem}.mlpick{padding:2px 10px!important;font-size:.8rem!important;cursor:pointer}
   .mlwarn{background:#fff6e0;border:1px solid #f0d58a;color:#7a5600;border-radius:6px;padding:7px 10px;font-size:.84rem;margin-bottom:10px}
   .mlpaper{background:#fff;color:#000;border:1px solid var(--line);border-radius:8px;padding:18px 22px;overflow:auto}.mlbody{outline:none;border-radius:4px}.mlbody:focus{box-shadow:0 0 0 2px #0e9fb855}
-  .mled summary{cursor:pointer}.mlf{display:block;margin:8px 0}.mlta{width:100%;font:inherit;font-size:.88rem}`;
+  .mled summary{cursor:pointer;padding:2px 0}.mled[open] summary{margin-bottom:10px}.mlrow{display:grid;grid-template-columns:120px minmax(0,1fr);gap:12px;align-items:start;margin:10px 0}.mlrow>span{font-size:.85rem;color:var(--mut);padding-top:8px;font-weight:600}.mlrow>span small{display:block;font-weight:400;font-size:.75rem;margin-top:2px}.mlrow .in,.mlrow .mlta{width:100%!important;max-width:none!important;box-sizing:border-box}.mlta{font:inherit;font-size:.9rem;line-height:1.5;resize:vertical;padding:8px 10px}.mlrow select.in{width:auto!important;min-width:280px}.mlgrid{max-width:720px}.mlhead .in,.mled .in{max-width:none}@media(max-width:700px){.mlrow{grid-template-columns:1fr;gap:4px}.mlrow>span{padding-top:0}}`;
   document.head.appendChild(st);
 })();
 
@@ -6268,7 +6268,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v47';
+  const VER = 'v48';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6327,7 +6327,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v47';
+const SE_VER = 'v48';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
