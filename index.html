@@ -3294,6 +3294,20 @@ function pvCfg() {
   return c;
 }
 const pvP = k => pvCfg().p[k] || PV_DEF[k];
+// account list for the Acc. No. boxes: every code set up for a project (sales / contra / temp / loan) + accounts you type yourself
+function pvAccts() {
+  const m = new Map(), add = (c, d) => { c = clean(c || ''); if (c && !m.has(c)) m.set(c, clean(d || '')); };
+  Object.entries(pvCfg().accts || {}).forEach(([c, d]) => add(c, d));
+  Object.keys({ ...PV_DEF, ...pvCfg().p }).forEach(k => { const P = pvP(k) || {}; [['acc', 'accD'], ['contra', 'contraD'], ['temp', 'tempD'], ['loan', 'loanD']].forEach(([a, d]) => add(P[a], P[d])); });
+  return [...m.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1);
+}
+const pvAccD = c => { const x = pvAccts().find(a => a[0] === clean(c || '')); return x ? x[1] : ''; };
+function pvLists() {
+  const P = Object.keys({ ...PV_DEF, ...pvCfg().p }).map(pvP).filter(Boolean);
+  return `<datalist id="pv-accts">${pvAccts().map(([c, d]) => `<option value="${esc(c)}">${esc(d)}</option>`).join('')}</datalist>
+  <datalist id="pv-pms">${[...new Set(P.map(p => p.pm).filter(Boolean))].map(x => `<option value="${esc(x)}">`).join('')}</datalist>
+  <datalist id="pv-projs">${[...new Set(P.map(p => p.proj).filter(Boolean))].map(x => `<option value="${esc(x)}">`).join('')}</datalist>`;
+}
 const pvSave = () => { try { DB.set('pvCfg', PV.cfg); } catch (e) { } };
 // "Manual Pickup Charges OCTO' 26" → "MANUAL PICK UP CHARGES OCT' 26" (spelling as in the posted vouchers, month normalised)
 function pvChargeName(name) {
@@ -3517,8 +3531,11 @@ function pvList() {
     const e = PV.ed[v.key] || {};
     const ds = (pvCfg().docset || {})[v.series] || {};
     v.date = (e.date && anyDate(e.date)) || (ds.date && anyDate(ds.date)) || pvNext(v.to);
-    v.lines = v.lines.map((l, i) => { const o = (e.lines || {})[i]; return o ? { ...l, ...o, edited: true } : l; }).filter((l, i) => !(e.del || {})[i]);
-    (e.extra || []).forEach(x => v.lines.push({ ...x, manual: true }));
+    // every line can be changed on its card: account, description, amount, project; removed lines can be put back
+    v.lines = v.lines.map((l, i) => { const o = (e.lines || {})[i]; return { ...(o ? { ...l, ...o, edited: true } : l), oi: i }; });
+    v.removed = v.lines.filter(l => (e.del || {})[l.oi]); v.lines = v.lines.filter(l => !(e.del || {})[l.oi]);
+    (e.extra || []).forEach((x, j) => v.lines.push({ ...x, manual: true, xi: j }));
+    if (e.payee != null) v.payee = e.payee; if (e.desc != null) v.desc = e.desc; v.pm = e.pm != null ? e.pm : v.P.pm;
     v.off = !!e.off || !!v.skip; v.bc = e.bc != null ? e.bc : Math.round((v.P.bc || 0) * 100);
     v.total = v.lines.reduce((a, l) => a + (l.amtC || 0), 0);
     v.manC = v.lines.filter(l => l.manual).reduce((a, l) => a + (l.amtC || 0), 0);   // deliberate adjustments typed by the user
@@ -3545,8 +3562,8 @@ function pvList() {
 function pvRows(v, r0) {
   const P = v.P, rows = [], n = v.lines.length, last = r0 + n - 1;
   v.lines.forEach((l, i) => {
-    const o = { M: l.acc, N: 1, O: P.proj, R: l.desc, Z: l.amtC / 100 };
-    if (i === 0) Object.assign(o, { B: v.doc, C: toUTC(v.date), D: 'PV', E: v.payee, F: v.desc, G: 'MYR', H: 1, I: 1, K: 'F', AE: P.pm, AG: fx(n > 1 ? `SUM(Z${r0}:Z${last})` : `Z${r0}`, v.total / 100), AI: 1, AN: P.by, AO: P.float || 2, AP: 'F' });
+    const o = { M: l.acc, N: 1, O: l.proj != null ? l.proj : P.proj, R: l.desc, Z: l.amtC / 100 };
+    if (i === 0) Object.assign(o, { B: v.doc, C: toUTC(v.date), D: 'PV', E: v.payee, F: v.desc, G: 'MYR', H: 1, I: 1, K: 'F', AE: v.pm || P.pm, AG: fx(n > 1 ? `SUM(Z${r0}:Z${last})` : `Z${r0}`, v.total / 100), AI: 1, AN: P.by, AO: P.float || 2, AP: 'F' });
     if (i === 0 && v.bc) o.AH = v.bc / 100;
     rows.push(o);
   });
@@ -3607,18 +3624,27 @@ function pvCard(v) {
   return `<section class="pvc${v.off ? ' off' : ''}" data-k="${id}">
   <div class="pvh"><label class="pvon"><input type="checkbox" data-act="pvoff" data-k="${id}" ${v.off ? '' : 'checked'}> Include</label><span class="pvsrc">${esc(v.file || '')}${v.eng ? ' · from engine' : ''}</span></div>
   <div class="pvtop">
-    <div class="pvf"><label>Pay To</label><b>${esc(v.payee || '—')}</b></div>
+    <div class="pvf"><label>Pay To</label><input class="in w b" data-act="pvhd" data-f="payee" data-k="${id}" value="${esc(v.payee || '')}" placeholder="payee as in AutoCount"></div>
     <div class="pvf r"><label>Voucher No</label><input class="in" data-act="pvno" data-k="${id}" value="${esc(v.doc)}" placeholder="set start no." size="16"></div>
-    <div class="pvf"><label>Description</label><span>${esc(v.desc)}</span></div>
+    <div class="pvf"><label>Description</label><input class="in w" data-act="pvhd" data-f="desc" data-k="${id}" value="${esc(v.desc)}"></div>
     <div class="pvf r"><label>Date</label><input class="in" data-act="pvdate" data-k="${id}" value="${esc(dmyStr(v.date))}" size="11"></div>
     <div class="pvf"><label>Currency</label><span>MYR · rate 1</span></div>
   </div>
   <h4 class="pvt">Payment Voucher</h4>
   <table class="t dense pvpay"><tr><th>Payment Method</th><th class="r">Payment Amount</th><th class="r">Bank Charge</th><th>Payment By</th><th class="r">Float</th></tr>
-  <tr><td>${esc(v.P.pm)}</td><td class="r"><b>${money(v.total)}</b></td><td class="r"><input class="in r" data-act="pvbc" data-k="${id}" value="${(v.bc / 100).toFixed(2)}" size="6"></td><td>${esc(v.P.by)}</td><td class="r">${v.P.float || 2}</td></tr></table>
+  <tr><td><input class="in" data-act="pvhd" data-f="pm" data-k="${id}" value="${esc(v.pm || v.P.pm || '')}" list="pv-pms" size="22"></td><td class="r"><b>${money(v.total)}</b></td><td class="r"><input class="in r" data-act="pvbc" data-k="${id}" value="${(v.bc / 100).toFixed(2)}" size="6"></td><td>${esc(v.P.by)}</td><td class="r">${v.P.float || 2}</td></tr></table>
   <table class="t dense pvl"><tr><th>Acc. No.</th><th>Account Desc.</th><th>Description</th><th class="r">Amount</th><th>Proj. No.</th><th></th></tr>
-  ${v.lines.map((l, i) => `<tr class="${l.manual ? 'man' : ''}"><td class="${l.acc ? '' : 'miss'}" title="${esc(l.why || '')}">${esc(l.acc || 'set code')}</td><td class="muted">${esc(l.accD || '')}</td><td>${l.manual ? esc(l.desc) : `<input class="in w" data-act="pvld" data-k="${id}" data-i="${i}" value="${esc(l.desc)}">`}</td><td class="r ${l.amtC < 0 ? 'neg' : ''}">${l.manual ? money(l.amtC) : `<input class="in r" data-act="pvla" data-k="${id}" data-i="${i}" value="${(l.amtC / 100).toFixed(2)}" size="10">`}</td><td>${esc(v.P.proj || '')}</td><td>${l.manual ? `<button class="x" data-act="pvxdel" data-k="${id}" data-i="${i - (v.lines.length - (e.extra || []).length)}" title="Remove">×</button>` : ''}</td></tr>`).join('')}
-  <tr class="add"><td><select class="in" data-pvacc="${id}">${[['acc', v.P.acc], ['contra', v.P.contra], ['temp', v.P.temp]].filter(x => x[1]).map(([k, a]) => `<option value="${k}">${esc(a)}</option>`).join('')}</select></td><td colspan="2"><input class="in w" data-pvdesc="${id}" placeholder="Manual line, e.g. ${esc(v.desc)} - [TNAHGBL]"></td><td class="r"><input class="in r" data-pvamt="${id}" placeholder="-0.00" size="10"></td><td colspan="2"><button class="btn sm" data-act="pvxadd" data-k="${id}">+ Line</button></td></tr></table>
+  ${v.lines.map(l => { const ref = l.manual ? `data-xi="${l.xi}"` : `data-oi="${l.oi}"`, A = `data-k="${id}" ${ref}`;
+    return `<tr class="${l.manual ? 'man' : l.edited ? 'edt' : ''}">
+    <td class="${l.acc ? '' : 'miss'}" title="${esc(l.why || 'Type or pick an account code')}"><input class="in pvacc" data-act="pvle" data-f="acc" ${A} value="${esc(l.acc || '')}" list="pv-accts" placeholder="set code" size="10"></td>
+    <td><input class="in w muted" data-act="pvle" data-f="accD" ${A} value="${esc(l.accD || pvAccD(l.acc))}" placeholder="account name"></td>
+    <td><input class="in w" data-act="pvle" data-f="desc" ${A} value="${esc(l.desc)}"></td>
+    <td class="r ${l.amtC < 0 ? 'neg' : ''}"><input class="in r" data-act="pvle" data-f="amtC" ${A} value="${(l.amtC / 100).toFixed(2)}" size="10"></td>
+    <td><input class="in" data-act="pvle" data-f="proj" ${A} value="${esc(l.proj != null ? l.proj : v.P.proj || '')}" list="pv-projs" size="11"></td>
+    <td class="pvlact"><button class="x" data-act="pvlcopy" ${A} title="Copy this line as a new line">⧉</button><button class="x" data-act="pvldel" ${A} title="Remove this line">×</button></td></tr>`; }).join('')}
+  <tr class="add"><td><input class="in pvacc" data-pvacc="${id}" list="pv-accts" placeholder="${esc(v.P.contra || v.P.acc || 'code')}" size="10"></td><td class="muted"><small>pick or type any account</small></td><td><input class="in w" data-pvdesc="${id}" placeholder="New line, e.g. ${esc(v.desc)} - [TNAHGBL]"></td><td class="r"><input class="in r" data-pvamt="${id}" placeholder="-0.00" size="10"></td><td><input class="in" data-pvproj="${id}" list="pv-projs" placeholder="${esc(v.P.proj || '')}" size="11"></td><td><button class="btn sm" data-act="pvxadd" data-k="${id}">+ Line</button></td></tr></table>
+  ${v.removed && v.removed.length ? `<p class="hint">Removed: ${v.removed.map(l => `<button class="lnk" data-act="pvlback" data-k="${id}" data-oi="${l.oi}" title="Put this line back">↩ ${esc(l.acc || '')} ${esc(l.desc)} ${money(l.amtC)}</button>`).join(' · ')}</p>` : ''}
+  ${Object.keys(e).some(k => ['lines', 'del', 'extra', 'payee', 'desc', 'pm'].includes(k)) ? `<p class="hint"><button class="lnk" data-act="pvlreset" data-k="${id}">Undo all my changes on this voucher</button></p>` : ''}
   <div class="pvfoot"><div>${v.warn.map(w => `<span class="pill warnp">${esc(w)}</span>`).join(' ')}</div>
   <div class="pvtot"><span>Net Total <b>${money(v.total)}</b></span>${v.manC ? `<span class="muted">incl. manual lines ${money(v.manC)}</span>` : ''}${v.srcBank != null ? `<span class="${bad ? 'bad' : 'ok'}">${esc(v.srcLbl)} ${money(v.srcBank)} ${bad ? `· differs ${money(diff)}` : '✓'}</span>` : ''}</div></div></section>`;
 }
@@ -3664,7 +3690,7 @@ EXT.render.V = function renderV() {
   if (!list.length) { panel().innerHTML = h + empty('Drop the finished settlement files here', 'DAILY SETTLEMENT KT / MS · SETTLEMENT PROLINTAS SILK / LKSA · OPERATOR SETTLEMENT REPORT (…) complete (KLIA). Ferry and TBS vouchers appear by themselves once their reports are loaded in the engine.'); return; }
   const tot = list.filter(v => !v.off).reduce((a, v) => a + v.total, 0), bad = list.filter(v => !v.off && !v.ok).length, noNo = list.filter(v => !v.off && !v.doc).length;
   h += `<div class="stats">${stat('Vouchers', list.filter(v => !v.off).length)}${stat('Total payment', fmtC(tot), 'hl')}${stat('Not matching source', bad, bad ? 'bad' : '')}${stat('Without voucher no.', noNo, noNo ? 'bad' : '')}</div>`;
-  panel().innerHTML = h + list.map(pvCard).join('');
+  panel().innerHTML = h + pvLists() + list.map(pvCard).join('');
 };
 
 if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
@@ -3673,7 +3699,7 @@ if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
   .pvh{display:flex;justify-content:space-between;align-items:center;font-size:.78rem;color:var(--mut);margin-bottom:6px}.pvon{display:flex;gap:6px;align-items:center;color:var(--ink);font-weight:500}
   .pvtop{display:grid;grid-template-columns:1fr auto;gap:6px 24px;align-items:center}.pvf{display:flex;gap:12px;align-items:center;font-size:.9rem}.pvf.r{justify-content:flex-end}.pvf label{min-width:92px;color:var(--mut);font-size:.8rem}.pvf.r label{min-width:auto}
   .pvt{color:#d0021b;text-align:center;font-size:1.25rem;font-weight:700;margin:12px 0 8px}
-  .pvpay,.pvl{width:100%;margin-bottom:10px}.pvl td{vertical-align:middle}.pvl .in.w{width:100%;min-width:300px}.pvl td.miss,.in.miss{color:#d0021b;font-weight:600}.pvl td.neg,.pvl td.neg input{color:var(--bad,#b42318)}.pvl tr.man td{background:color-mix(in srgb,var(--pri) 7%,transparent)}.pvl tr.add td{border-top:1px dashed var(--line)}
+  .pvpay,.pvl{width:100%;margin-bottom:10px}.pvl td{vertical-align:middle}.pvl td:nth-child(2) .in.w{min-width:190px;color:var(--mut)}.pvl td.miss .in{border-color:#d0021b;color:#d0021b}.pvl tr.edt td{background:#fffbea}.pvlact{white-space:nowrap}.pvlact .x{margin-left:4px}.pvtop .in.w{width:100%;min-width:260px}.pvtop .in.b{font-weight:700}.pvl .in.w{width:100%;min-width:300px}.pvl td.miss,.in.miss{color:#d0021b;font-weight:600}.pvl td.neg,.pvl td.neg input{color:var(--bad,#b42318)}.pvl tr.man td{background:color-mix(in srgb,var(--pri) 7%,transparent)}.pvl tr.add td{border-top:1px dashed var(--line)}
   .pvfoot{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}.pvtot{display:flex;flex-direction:column;align-items:flex-end;gap:4px;font-size:.9rem}.pvtot .ok{color:var(--ok,#067647)}.pvtot .bad{color:var(--bad,#b42318);font-weight:600}
   .pill.warnp{background:color-mix(in srgb,#f79009 15%,transparent);color:var(--ink);display:inline-block;margin:2px 4px 2px 0;white-space:normal}`;
   document.head.appendChild(st);
@@ -3686,8 +3712,16 @@ if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
   document.addEventListener('click', async e => {
     const b = e.target.closest('[data-act]'); if (!b) return; const a = b.dataset.act, k = b.dataset.k;
     if (a === 'pvsel') { PV.sel = b.dataset.v; renderAll(); }
-    else if (a === 'pvxadd') { const box = b.closest('.pvc'), acc = box.querySelector(`[data-pvacc]`).value, d = clean(box.querySelector('[data-pvdesc]').value), amt = num(box.querySelector('[data-pvamt]').value); if (!d || amt == null) { toast('Fill description and amount', 'bad'); return; } const v = pvList().find(x => x.key === k); (ed(k).extra = ed(k).extra || []).push({ acc: v.P[acc], accD: v.P[acc + 'D'], desc: d, amtC: cents(amt) }); renderAll(); }
+    else if (a === 'pvxadd') {
+      const box = b.closest('.pvc'), v = pvList().find(x => x.key === k), acc = clean(box.querySelector('[data-pvacc]').value) || v.P.contra || v.P.acc, d = clean(box.querySelector('[data-pvdesc]').value), amt = num(box.querySelector('[data-pvamt]').value), pj = clean(box.querySelector('[data-pvproj]').value);
+      if (!d || amt == null) { toast('Fill description and amount', 'bad'); return; }
+      (ed(k).extra = ed(k).extra || []).push({ acc, accD: pvAccD(acc), desc: d, amtC: cents(amt), ...(pj ? { proj: pj } : {}) }); renderAll();
+    }
     else if (a === 'pvxdel') { const x = ed(k).extra || []; x.splice(+b.dataset.i, 1); renderAll(); }
+    else if (a === 'pvldel') { if (b.dataset.xi != null) (ed(k).extra || []).splice(+b.dataset.xi, 1); else (ed(k).del = ed(k).del || {})[b.dataset.oi] = true; renderAll(); }
+    else if (a === 'pvlback') { delete (ed(k).del || {})[b.dataset.oi]; renderAll(); }
+    else if (a === 'pvlcopy') { const v = pvList().find(x => x.key === k), l = v && v.lines.find(x => b.dataset.xi != null ? x.xi === +b.dataset.xi : x.oi === +b.dataset.oi); if (!l) return; (ed(k).extra = ed(k).extra || []).push({ acc: l.acc, accD: l.accD, desc: l.desc, amtC: l.amtC, ...(l.proj != null ? { proj: l.proj } : {}) }); toast('Line copied — change it at the bottom of the voucher'); renderAll(); }
+    else if (a === 'pvlreset') { if (!confirm('Undo every change you made on this voucher (lines, payee, description, payment method)?')) return; ['lines', 'del', 'extra', 'payee', 'desc', 'pm'].forEach(x => delete ed(k)[x]); renderAll(); }
     else if (a === 'pvclr') { PV.bus = {}; PV.pro = {}; PV.klia = {}; PV.ed = {}; S.files = (S.files || []).filter(f => f.module !== 'V'); renderAll(); }
     else if (a === 'pvdl') { const l = pvList().filter(v => !v.off), miss = l.filter(v => !v.doc).length, bad = l.filter(v => !v.ok).length; if (miss) { toast(`${miss} voucher(s) have no voucher no. — type the start number`, 'bad'); return; } const noAcc = l.filter(v => v.lines.some(x => !x.acc) || !v.payee).map(v => v.P.label); if (noAcc.length) { toast(`Account code / payee missing for: ${[...new Set(noAcc)].join(', ')} — fill them in Cash Book codes (or untick those vouchers)`, 'bad'); return; } if (bad && !confirm(`${bad} voucher(s) do not match their settlement total. Download anyway?`)) return; await busy('Building Import CashBook…', async () => saveBlob(`IMPORT CASHBOOK PV ${typeof cuToday === 'function' ? cuToday() : pvYYMM(l[0].date)}.xlsx`, await pvXlsx(l))); }
     else if (a === 'pvcopy') { const t = pvTsv(pvList(), b.dataset.v, !!b.dataset.h); try { await navigator.clipboard.writeText(t); toast(`${b.dataset.v}: header + ${t.split('\n').length - 1} rows copied (columns A–AQ) — in AutoCount click Paste from Clipboard`); } catch (er) { toast('Clipboard blocked by the browser', 'bad'); } }
@@ -3698,6 +3732,18 @@ if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
     else if (a === 'pvno') ed(k).no = clean(t.value);
     else if (a === 'pvdate') { const d = anyDate(t.value); if (!d) { toast('Date: dd/mm/yyyy', 'bad'); return; } ed(k).date = dmyStr(d); }
     else if (a === 'pvbc') ed(k).bc = cents(t.value);
+    else if (a === 'pvle') {
+      // one line: account / account name / description / amount / project — generated lines keep the change in ed.lines, added lines in ed.extra
+      const f = t.dataset.f; let val = f === 'amtC' ? cents(t.value) : clean(t.value);
+      if (f === 'amtC' && num(t.value) == null) { toast('Amount: a number, e.g. -53.13', 'bad'); return; }
+      if (f === 'acc') val = val.toUpperCase();
+      const patch = { [f]: val };
+      if (f === 'acc') { const d = pvAccD(val); if (d) patch.accD = d; }
+      if (f === 'accD') { const L = pvList().find(x => x.key === k), l = L && L.lines.find(x => t.dataset.xi != null ? x.xi === +t.dataset.xi : x.oi === +t.dataset.oi); if (l && l.acc && val) { const c = pvCfg(); (c.accts = c.accts || {})[l.acc] = val; pvSave(); } }
+      if (t.dataset.xi != null) { const X = ed(k).extra || [], j = +t.dataset.xi; if (X[j]) X[j] = { ...X[j], ...patch }; }
+      else { const L0 = (ed(k).lines = ed(k).lines || {}); L0[t.dataset.oi] = { ...(L0[t.dataset.oi] || {}), ...patch }; }
+    }
+    else if (a === 'pvhd') ed(k)[t.dataset.f] = clean(t.value);
     else if (a === 'pvld') { const L0 = (ed(k).lines = ed(k).lines || {}); L0[t.dataset.i] = { ...(L0[t.dataset.i] || {}), desc: clean(t.value) }; }
     else if (a === 'pvla') { const L0 = (ed(k).lines = ed(k).lines || {}); L0[t.dataset.i] = { ...(L0[t.dataset.i] || {}), amtC: cents(t.value) }; }
     else if (a === 'pvds') { const c = pvCfg(), D = c.docset = c.docset || {}, o = D[t.dataset.s] = D[t.dataset.s] || {}, f = t.dataset.f, val = t.value.trim();
@@ -6377,7 +6423,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v55';
+  const VER = 'v56';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6436,7 +6482,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v55';
+const SE_VER = 'v56';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
