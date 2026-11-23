@@ -6423,7 +6423,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v57';
+  const VER = 'v58';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6482,7 +6482,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v57';
+const SE_VER = 'v58';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
@@ -6588,6 +6588,7 @@ document.addEventListener('change', async e => {
   const pvSel = () => (typeof PV !== 'undefined' && PV.sel) || 'ALL';
   // one entry per screen; {k: tab, term / pv / et / mail: what the entry opens inside that tab}
   const items = () => [
+    ['home', '', [{ k: 'H', name: 'Overview', sub: 'Today at a glance' }]],
     ['set', 'Settlement Project', [
       ...terms().map(t => ({ k: 'A', term: t, name: termName(t) || t, sub: 'Daily Settlement · Sales Report · Invoice Summary' })),
       ...['B', 'C', 'K', 'T', 'M', 'X'].filter(has).map(k => ({ k, name: k === 'C' ? ((typeof ferryProj === 'function' && ferryProj() || {}).name || 'Ferry') : tabName(k), sub: tabSub(k) }))]],
@@ -6606,7 +6607,7 @@ document.addEventListener('change', async e => {
       ...['P', 'L'].filter(has).map(k => ({ k, name: tabName(k), sub: tabSub(k) })),
       ...(has('V') ? [{ k: 'V', pv: 'SET', name: 'Cash Book codes', sub: 'Accounts · payees · posting rules' }] : [])]]
   ];
-  const isOn = it => S.tab === it.k && (it.term == null || S.termTab === it.term) && (it.pv == null || pvSel() === it.pv || (it.pv === 'ALL' && !items()[1][2].some(x => x.pv === pvSel() && x.pv !== 'ALL') && pvSel() !== 'SET')) && (it.et == null || S.eTerm === it.et) && (it.mail == null || S.qMail === it.mail);
+  const isOn = it => S.tab === it.k && (it.term == null || S.termTab === it.term) && (it.pv == null || pvSel() === it.pv || (it.pv === 'ALL' && !items().find(x => x[0] === 'cb')[2].some(x => x.pv === pvSel() && x.pv !== 'ALL') && pvSel() !== 'SET')) && (it.et == null || S.eTerm === it.et) && (it.mail == null || S.qMail === it.mail);
   // a file belongs to the open project when its module matches (bus terminals: same terminal; its ledger files count too)
   const mine = f => !f.ok || (f.module === S.tab && (S.tab !== 'A' || !f.term || f.term === S.termTab)) || (S.tab === 'A' && f.module === 'L' && f.term === S.termTab) || (S.tab === 'L' && f.module === 'L');
   const count = it => it.k === 'Q' ? (typeof mlPageCount === 'function' ? mlPageCount(it.mail) : 0) : it.k === 'V' ? 0 : (S.files || []).filter(f => f.ok && f.module === it.k && (it.k !== 'A' || !f.term || f.term === it.term)).length;
@@ -6617,13 +6618,16 @@ document.addEventListener('change', async e => {
     if (S.tab === 'A' && !terms().includes(S.termTab)) S.termTab = terms()[0];
     const G = items(), actG = (G.find(x => x[2].some(isOn)) || [])[0], open = openG === null ? actG : openG;
     // one group open at a time: the group of the page you are on, or the one you clicked
-    $('#tabs').innerHTML = G.map(([id, g, list]) => { if (!list.length) return ''; const cl = id !== open, n = list.reduce((s, it) => s + count(it), 0);
+    $('#tabs').innerHTML = G.map(([id, g, list]) => { if (!list.length) return ''; if (!g) return `<div class="gbody top1">` + list.map(it => `<button class="${isOn(it) ? 'on' : ''} home" ${attrs(it)} title="${esc(it.sub)}"><span class="tn">${esc(it.name)}</span></button>`).join('') + '</div>';
+      const cl = id !== open, n = list.reduce((s, it) => s + count(it), 0);
       return `<div class="grp${cl ? ' closed' : ''}${id === actG ? ' act' : ''}" data-ui="grp" data-g="${id}" role="button" tabindex="0"><span>${g}</span>${cl && n ? `<span class="tb">${n}</span>` : ''}<i class="chev">▾</i></div><div class="gbody${cl ? ' closed' : ''}">` + list.map(it => { const c = count(it);
       return `<button class="${isOn(it) ? 'on' : ''}${it.s ? ' sub' : ''}" ${attrs(it)} title="${esc(it.sub)}"><span class="tn">${esc(it.name)}</span>${it.soon ? '<span class="soon">soon</span>' : c ? `<span class="tb" title="${c} files loaded">${c}</span>` : ''}</button>`; }).join('') + '</div>'; }).join('');
     const curG = G.find(x => x[2].some(isOn)), cur = curG && curG[2].find(isOn), ph = $('#ptitle');
     const pre = curG && /^(cb|mail)$/.test(curG[0]) && !(curG[0] === 'cb' && cur.pv === 'ALL') ? `<small class="crumb">${esc(curG[1])}</small>` : '';
     if (ph) ph.innerHTML = cur ? `${pre}<h2>${esc(cur.name)}</h2><span>${esc(cur.sub)}</span>` : '';
-    const d = $('#drop'); if (d) { d.classList.toggle('mini', (S.files || []).length > 0); d.style.display = cur && ((cur.k === 'Q' && cur.mail === 'SET') || (cur.k === 'V' && cur.pv === 'SET') || cur.k === 'P') ? 'none' : ''; }
+    const d = $('#drop'); if (d) { d.classList.toggle('mini', (S.files || []).length > 0); d.classList.toggle('hidez', !!(cur && ((cur.k === 'Q' && cur.mail === 'SET') || (cur.k === 'V' && cur.pv === 'SET') || cur.k === 'P' || cur.k === 'H'))); }
+    if (ph) ph.style.display = cur && cur.k === 'H' ? 'none' : '';
+    const ch = $('#chips'); if (ch) ch.style.display = cur && cur.k === 'H' ? 'none' : '';
   };
   renderChips = function () {
     const all = (S.files || []).map((f, i) => ({ f, i })), list = S.chipsAll ? all : all.filter(x => mine(x.f)), other = all.length - list.length;
@@ -6663,12 +6667,131 @@ document.addEventListener('change', async e => {
   #tabs button{font-size:.93rem!important;font-weight:500;color:var(--ink);padding:8px 10px!important}#tabs button.sub{padding-left:24px!important;font-size:.88rem!important}
   #tabs button.on{font-weight:650}#tabs .soon{flex:none;font-size:.66rem;color:var(--mut);border:1px solid var(--line);border-radius:999px;padding:0 7px}
   #tabs .grp .tb{margin-left:auto;margin-right:8px}#tabs .grp.act>span:first-child{color:var(--acc,#0e9fb8)}
-  #ptitle .crumb{display:block;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin-bottom:2px}
+  #drop.hidez{display:none!important}#ptitle .crumb{display:block;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin-bottom:2px}
   section.fold>h3:first-child{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px}section.fold>h3:first-child::after{content:'▾';margin-left:auto;color:var(--mut);font-size:.9rem;transition:transform .15s}
   section.fold.folded>h3:first-child::after{transform:rotate(-90deg)}section.fold.folded>:not(h3:first-child){display:none!important}section.fold.folded{padding-top:12px;padding-bottom:12px}section.fold.folded>h3{margin:0}
   p.hint.clamp{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer;position:relative}p.hint.clamp:not(.open)::before{content:'ⓘ ';}p.hint.clamp.open{display:block}
   p.hint.clamp:not(.open):hover{color:var(--ink)}
   @media(max-width:1000px){#tabs .gbody,#tabs .gbody.closed{display:contents}}`;
+  document.head.appendChild(st);
+})();
+
+
+/* ===== ext: zdesign.js ===== */
+/* ====================== DESIGN — Overview page + GO HUB visual system (loaded last: its styles win) ======================
+   Overview: today in one screen — what is loaded, payment vouchers, emails, what needs attention, and the 1 → 2 → 3 flow.
+   Visual system: GO HUB teal / navy, one type scale, calmer cards, clear tables and buttons, in Light / Dim / Dark. */
+(function () {
+  if (typeof HTMLElement === 'undefined') return;                                         // headless test harness keeps its own tab
+  EXT.load.push(async () => { if (!S.tab || S.tab === 'A') S.tab = 'H'; });          // open on the Overview
+  const money = c => 'RM ' + fmtC(c);
+  const go = sel => { const b = document.querySelector(`#tabs button[data-act="tab"]${sel}`); if (b) b.click(); };
+  const safe = (f, d) => { try { return f(); } catch (e) { return d; } };
+
+  function snapshot() {
+    const files = (S.files || []).filter(f => f.ok);
+    const projects = [
+      ...terms().map(t => ({ name: termName(t) || t, sel: `[data-v="A"][data-term="${t}"]`, n: files.filter(f => f.module === 'A' && (!f.term || f.term === t)).length })),
+      ...['B', 'C', 'K', 'T', 'M', 'X'].filter(k => TABS.some(t => t[0] === k)).map(k => ({ name: k === 'C' ? (safe(() => ferryProj().name, '') || 'Ferry') : (TABS.find(t => t[0] === k) || [])[1], sel: `[data-v="${k}"]`, n: files.filter(f => f.module === k).length }))
+    ];
+    const pv = safe(() => pvList().filter(v => !v.off), []);
+    const mails = safe(() => Object.keys(ML_TPL0).flatMap(id => mlEmails(id).filter(e => e.att.length).map(e => ({ ...e, page: Object.keys(ML_PAGES).find(p => ML_PAGES[p].includes(id)) }))), []);
+    const people = safe(() => mlCfg().people, []);
+    const todo = [];
+    const vBad = pv.filter(v => !v.ok), vNoDoc = pv.filter(v => !v.doc), vNoAcc = pv.filter(v => v.lines.some(l => !l.acc) || !v.payee);
+    if (vBad.length) todo.push({ t: `${vBad.length} payment voucher${vBad.length > 1 ? 's do' : ' does'} not match the settlement total`, sub: vBad.map(v => v.P.label).join(', '), sel: '[data-v="V"][data-pv="ALL"]', lvl: 'bad' });
+    if (vNoAcc.length) todo.push({ t: `Account code or payee missing on ${vNoAcc.length} voucher${vNoAcc.length > 1 ? 's' : ''}`, sub: [...new Set(vNoAcc.map(v => v.P.label))].join(', '), sel: '[data-v="V"][data-pv="SET"]', lvl: 'bad' });
+    if (vNoDoc.length) todo.push({ t: `Doc No not set for ${vNoDoc.length} voucher${vNoDoc.length > 1 ? 's' : ''}`, sub: 'Type the start number in Doc No & payment date', sel: '[data-v="V"][data-pv="ALL"]', lvl: 'warn' });
+    const mNoTo = mails.filter(e => !e.to.some(r => r.email));
+    if (mNoTo.length) todo.push({ t: `${mNoTo.length} email${mNoTo.length > 1 ? 's have' : ' has'} no To address`, sub: mNoTo.map(e => e.title).slice(0, 4).join(', '), sel: `[data-v="Q"][data-mail="${mNoTo[0].page}"]`, lvl: 'bad' });
+    const noMail = people.filter(p => !p.email);
+    if (noMail.length) todo.push({ t: `${noMail.length} colleague${noMail.length > 1 ? 's' : ''} in Cc without an email address`, sub: noMail.map(p => p.name).slice(0, 5).join(', ') + (noMail.length > 5 ? '…' : ''), sel: '[data-v="Q"][data-mail="SET"]', lvl: 'warn' });
+    const bad = (S.files || []).filter(f => !f.ok);
+    if (bad.length) todo.push({ t: `${bad.length} file${bad.length > 1 ? 's' : ''} not recognised`, sub: bad.map(f => f.name).slice(0, 3).join(', '), sel: '', lvl: 'warn' });
+    const lbl = m => m === 'A' ? 'Bus terminals' : m === 'V' ? 'Import Cashbook' : m === 'Q' ? 'Email' : m === 'L' ? 'Ledger' : ((TABS.find(t => t[0] === m) || [])[1] || m);
+    const areas = [...new Set(files.map(f => lbl(f.module)))];
+    return { files, projects, pv, mails, todo, areas };
+  }
+
+  EXT.render.H = function () {
+    const X = snapshot(), d = new Date();
+    const day = d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const pvTot = X.pv.reduce((a, v) => a + v.total, 0), mailOps = X.mails.length;
+    const kpi = (lbl, val, sub, sel, cls = '') => `<button class="kpi ${cls}" ${sel ? `data-go='${sel}'` : 'disabled'}><small>${lbl}</small><b>${val}</b><span>${sub}</span></button>`;
+    const step = (n, t, sub, sel, done) => `<button class="step${done ? ' done' : ''}" data-go='${sel}'><i>${done ? '✓' : n}</i><div><b>${t}</b><span>${sub}</span></div></button>`;
+    panel().innerHTML = `
+    <section class="hero2"><div><small>${esc(day)}</small><h1>Settlement overview</h1><p>Drop today's files anywhere on this page — each one goes to its project, voucher or email by itself.</p><button class="hb" data-pick>Choose files</button></div>
+      <div class="flow">${step(1, 'Settlement', `${X.files.length} file${X.files.length === 1 ? '' : 's'} loaded`, '[data-v="A"]', X.files.length > 0)}<em>→</em>${step(2, 'Payment vouchers', X.pv.length ? `${X.pv.length} ready · ${money(pvTot)}` : 'AutoCount Import CashBook', '[data-v="V"][data-pv="ALL"]', X.pv.length > 0)}<em>→</em>${step(3, 'Email operators', mailOps ? `${mailOps} email${mailOps > 1 ? 's' : ''} ready` : 'Outlook, from finance', '[data-v="Q"][data-mail="CASH"]', mailOps > 0)}</div></section>
+    <div class="kpis">
+      ${kpi('Files loaded', X.files.length, X.areas.length ? X.areas.join(' · ') : 'none yet today', '')}
+      ${kpi('Payment vouchers', X.pv.length, X.pv.length ? money(pvTot) : 'none yet', '[data-v="V"][data-pv="ALL"]')}
+      ${kpi('Emails ready', mailOps, mailOps ? [...new Set(X.mails.map(e => mlT(e.id).name.split(' · ')[0]))].slice(0, 3).join(' · ') : 'drop the reports', '[data-v="Q"][data-mail="CASH"]')}
+      ${kpi('Needs attention', X.todo.length, X.todo.length ? 'see the list below' : 'all clear', '', X.todo.length ? 'att' : 'okk')}
+    </div>
+    <div class="ov2">
+      <section class="card"><h3>Needs attention</h3>${X.todo.length ? `<ul class="todo">${X.todo.map(t => `<li class="${t.lvl}"><div><b>${esc(t.t)}</b><span>${esc(t.sub || '')}</span></div>${t.sel ? `<button class="btn sm" data-go='${t.sel}'>Open</button>` : ''}</li>`).join('')}</ul>` : `<div class="allok">✓ Nothing to fix</div>`}</section>
+      <section class="card"><h3>Projects</h3><ul class="plist">${X.projects.map(p => `<li><button data-go='${p.sel}'><i class="${p.n ? 'y' : ''}"></i><span>${esc(p.name)}</span><small>${p.n ? p.n + ' file' + (p.n > 1 ? 's' : '') : '—'}</small></button></li>`).join('')}</ul></section>
+    </div>
+    ${X.pv.length ? `<section class="card"><h3>Payment vouchers <span class="pill">${X.pv.length}</span></h3><table class="t"><tr><th>Doc No</th><th>Pay To</th><th>Description</th><th class="r">Amount (RM)</th><th>Check</th></tr>${X.pv.slice(0, 12).map(v => `<tr><td>${esc(v.doc || '—')}</td><td>${esc(v.payee || '')}</td><td class="muted">${esc(v.desc || '')}</td><td class="r">${fmtC(v.total)}</td><td>${v.ok ? '<span class="pill okp">matches</span>' : '<span class="pill badp">check</span>'}</td></tr>`).join('')}<tr class="tot"><td colspan="3">Total</td><td class="r">${fmtC(pvTot)}</td><td></td></tr></table></section>` : ''}`;
+  };
+  document.addEventListener('click', e => { if (e.target.closest('[data-pick]')) { const i = document.getElementById('fileIn') || document.querySelector('input[type=file]'); if (i) i.click(); return; } const b = e.target.closest('[data-go]'); if (!b || S.tab !== 'H') return; const s = b.getAttribute('data-go'); if (s) go(s); });
+
+  /* ---------------- visual system ---------------- */
+  const st = document.createElement('style');
+  st.textContent = `
+  :root{--pri:#0b8ea3;--pri2:#0a7a8c;--brand:#0f2b3d;--acc:#0e9fb8;--bg:#f4f6f9;--line:#e4e9f0;--line2:#d6dde7;--mut:#5f6b7d;--ink:#142231;--r:14px;--sh:0 1px 2px rgba(15,43,61,.05),0 6px 16px rgba(15,43,61,.04)}
+  [data-theme="dim"]{--pri:#3fb3c6;--pri2:#5cc3d3;--brand:#cfe3ea;--acc:#3fb3c6;--sh:none}
+  [data-theme="dark"]{--pri:#35b0c4;--pri2:#55c0d1;--brand:#d4e6ec;--acc:#35b0c4;--sh:none}
+  body{font-family:"Segoe UI Variable Text","Segoe UI",Inter,system-ui,-apple-system,Roboto,Arial,sans-serif;font-size:14.5px;-webkit-font-smoothing:antialiased}
+  .top{padding:10px 22px;box-shadow:0 1px 0 var(--line)}
+  .logo{background:linear-gradient(135deg,var(--brand) 0%,var(--acc) 100%)!important;border-radius:10px}
+  .brand b{font-size:1rem;letter-spacing:-.01em}
+  #side{background:var(--card);border-right:1px solid var(--line)}
+  #tabs button{border-radius:8px!important;position:relative;transition:background .12s}
+  #tabs button:hover{background:color-mix(in srgb,var(--pri) 6%,var(--card))}
+  #tabs button.on{background:color-mix(in srgb,var(--pri) 12%,var(--card))!important;color:var(--ink)!important;border-color:transparent!important;font-weight:650}
+  #tabs button.on::before{content:'';position:absolute;left:0;top:7px;bottom:7px;width:3px;border-radius:3px;background:var(--pri)}
+  #tabs .grp{color:var(--mut)!important;font-size:.7rem!important}#tabs .grp.act>span:first-child{color:var(--pri)!important}
+  #tabs .top1{border-bottom:1px solid var(--line);padding:4px 0 8px;margin-bottom:2px}#tabs button.home{font-weight:650}
+  #tabs .tb{background:color-mix(in srgb,var(--pri) 14%,var(--card));color:var(--pri);border-radius:99px;font-size:.7rem;padding:0 7px;font-weight:700}
+  main{max-width:1320px}
+  #ptitle h2{font-size:1.35rem;letter-spacing:-.015em;font-weight:650}
+  .card{border-radius:var(--r);border-color:var(--line);box-shadow:var(--sh);padding:18px 22px}
+  .card h3{font-size:1rem;font-weight:650;letter-spacing:-.005em}
+  .btn{border-radius:9px;transition:background .12s,border-color .12s,box-shadow .12s}
+  .btn.pri{background:var(--pri);border-color:var(--pri)}.btn.pri:hover{background:var(--pri2);border-color:var(--pri2)}
+  .btn:focus-visible,.in:focus,.search:focus,select:focus,textarea:focus{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--pri) 25%,transparent);border-color:var(--pri)!important}
+  .in{border-radius:8px}
+  .seg button{border-radius:10px}.seg button.on{border-color:var(--pri);box-shadow:0 0 0 2px color-mix(in srgb,var(--pri) 22%,transparent);background:color-mix(in srgb,var(--pri) 7%,var(--card))}
+  .t th{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);font-weight:650;background:color-mix(in srgb,var(--bg) 70%,var(--card))}
+  .t tbody tr:hover td,.t tr:hover>td{background:color-mix(in srgb,var(--pri) 4%,var(--card))}
+  .t.dense th{font-size:.68rem}
+  .stat{background:var(--card);border-radius:12px}.stat b{font-size:1.2rem}
+  .pill{background:color-mix(in srgb,var(--pri) 12%,var(--card));color:var(--pri)}.pill.badp{background:color-mix(in srgb,var(--bad) 12%,var(--card));color:var(--bad)}
+  .drop{border-radius:var(--r);border-width:1.5px}.drop.over,.drop:hover{border-color:var(--pri)}
+  .chip{border-radius:9px}
+  /* Overview */
+  .hero2{display:flex;gap:24px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:24px 26px;border-radius:18px;margin-bottom:16px;color:#fff;background:linear-gradient(120deg,#0f2b3d 0%,#0e5d73 55%,#0e9fb8 100%);box-shadow:var(--sh)}
+  .hero2 small{opacity:.75;font-size:.8rem;letter-spacing:.02em}.hero2 h1{margin:2px 0 6px;font-size:1.6rem;letter-spacing:-.02em;font-weight:650}.hero2 p{margin:0;opacity:.85;max-width:460px;font-size:.9rem}
+  .hb{margin-top:14px;background:#fff;color:#0e5d73;border:0;border-radius:9px;padding:9px 18px;font:inherit;font-weight:650;cursor:pointer}.hb:hover{background:#e6f6f9}
+  .flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.flow em{font-style:normal;opacity:.6}
+  .step{display:flex;gap:10px;align-items:center;text-align:left;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);color:#fff;border-radius:12px;padding:10px 14px;cursor:pointer;font:inherit;min-width:170px;transition:background .12s}
+  .step:hover{background:rgba(255,255,255,.18)}.step i{font-style:normal;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.2);font-weight:700;font-size:.85rem;flex:none}
+  .step.done i{background:#fff;color:#0e5d73}.step b{display:block;font-size:.9rem}.step span{display:block;font-size:.76rem;opacity:.8}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+  .kpi{text-align:left;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;box-shadow:var(--sh);cursor:pointer;font:inherit;color:var(--ink);transition:border-color .12s,transform .12s}
+  .kpi:not([disabled]):hover{border-color:var(--pri);transform:translateY(-1px)}.kpi[disabled]{cursor:default}
+  .kpi small{display:block;color:var(--mut);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;font-weight:600}.kpi b{display:block;font-size:1.9rem;font-weight:650;letter-spacing:-.02em;margin:4px 0 2px;font-variant-numeric:tabular-nums}.kpi span{color:var(--mut);font-size:.82rem}
+  .kpi.att b{color:var(--warn)}.kpi.okk b{color:var(--ok)}
+  .ov2{display:grid;grid-template-columns:1.4fr 1fr;gap:16px}.ov2 .card{margin:0 0 16px}
+  .todo{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:8px}.todo li{display:flex;gap:12px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-left:4px solid var(--warn);border-radius:10px;padding:10px 12px}
+  .todo li.bad{border-left-color:var(--bad)}.todo b{display:block;font-size:.9rem;font-weight:600}.todo span{display:block;color:var(--mut);font-size:.8rem}
+  .allok{padding:26px;text-align:center;color:var(--ok);font-weight:600;background:color-mix(in srgb,var(--ok) 7%,var(--card));border-radius:10px;margin-top:8px}
+  .plist{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:2px}.plist button{width:100%;display:flex;align-items:center;gap:10px;background:none;border:0;padding:8px 6px;border-radius:8px;cursor:pointer;font:inherit;color:var(--ink);text-align:left}
+  .plist button:hover{background:color-mix(in srgb,var(--pri) 6%,var(--card))}.plist i{width:9px;height:9px;border-radius:50%;background:var(--line2);flex:none}.plist i.y{background:var(--ok)}.plist span{flex:1}.plist small{color:var(--mut)}
+  .pvseg{display:none!important}  /* same list as the sidebar */
+  @media(max-width:1000px){.kpis{grid-template-columns:repeat(2,1fr)}.ov2{grid-template-columns:1fr}}
+  @media(max-width:560px){.kpis{grid-template-columns:1fr}.step{min-width:0;flex:1}}`;
   document.head.appendChild(st);
 })();
 
