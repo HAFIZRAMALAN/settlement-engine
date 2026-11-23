@@ -6423,7 +6423,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v56';
+  const VER = 'v57';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6482,7 +6482,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v56';
+const SE_VER = 'v57';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
@@ -6596,31 +6596,34 @@ document.addEventListener('change', async e => {
       { k: 'V', pv: 'KT', name: 'Kuala Terengganu', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'MS', name: 'Melaka Sentral', sub: 'PV · MSM2TPV', s: 1 },
       { k: 'V', pv: 'PRO', name: 'Prolintas (SILK · LKSA)', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'KLIA', name: 'KLIA TQMS', sub: 'PV · M3TPV', s: 1 },
       { k: 'V', pv: 'FERRY', name: 'Ferry', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'TBS', name: 'TBS', sub: 'PV · M1TPV', s: 1 }] : []],
-    ['tools', 'Tools', [
-      ...(has('E') ? [{ k: 'E', et: 'MS', name: 'Email · Melaka Sentral', sub: 'Bulk email to operators' }, { k: 'E', et: 'KT', name: 'Email · Kuala Terengganu', sub: 'Bulk email to operators' }] : []),
-      { k: 'Q', mail: 'OPPAY', name: 'Email · Operator Payment KT', sub: 'Operator Payment Report → Outlook draft' }, { k: 'Q', mail: 'PRO', name: 'Email · Prolintas', sub: 'LKSA · SILK settlement → Outlook draft' },
-      { k: 'Q', mail: 'KLIA', name: 'Email · KLIA TQMS', sub: 'One email per operator → Outlook draft' }, { k: 'Q', mail: 'KTMB', name: 'Email · KTMB', sub: 'ETS & Komuter revenue sharing → Outlook draft' },
-      { k: 'Q', mail: 'FERRY', name: 'Email · Mersing · Tanjung Gemok', sub: 'Settlement statement → Outlook draft' }, { k: 'Q', mail: 'CASH', name: 'Email · Cashless · SBST & MY30', sub: 'Weekly sales report → Outlook draft' }]],
+    ['mail', 'Email', [
+      ...(has('E') ? [{ k: 'E', et: 'KT', name: 'Kuala Terengganu', sub: 'Daily settlement to operators' }, { k: 'E', et: 'MS', name: 'Melaka Sentral', sub: 'Daily settlement to operators' }] : []),
+      { k: 'Q', mail: 'OPPAY', name: 'Operator Payment KT', sub: 'Operator Payment Report' }, { k: 'Q', mail: 'PRO', name: 'Prolintas', sub: 'LKSA · SILK settlement' },
+      { k: 'Q', mail: 'KLIA', name: 'KLIA TQMS', sub: 'One email per operator' }, { k: 'Q', mail: 'KTMB', name: 'KTMB', sub: 'ETS & Komuter revenue sharing' },
+      { k: 'Q', mail: 'FERRY', name: 'Mersing · Tanjung Gemok', sub: 'Settlement statement' }, { k: 'Q', mail: 'CASH', name: 'Cashless · SBST & MY30', sub: 'Weekly sales report, one per operator' },
+      { k: 'Q', mail: 'SET', name: 'Contacts & signature', sub: 'Sender · contacts · signature · how to send', s: 1 }]],
     ['settings', 'Settings', [
       ...['P', 'L'].filter(has).map(k => ({ k, name: tabName(k), sub: tabSub(k) })),
-      ...(has('V') ? [{ k: 'V', pv: 'SET', name: 'Cash Book codes', sub: 'Accounts · payees · running numbers' }] : []),
-      { k: 'Q', mail: 'SET', name: 'Email contacts & signature', sub: 'Sender · contacts · GoHub signature' }]]
+      ...(has('V') ? [{ k: 'V', pv: 'SET', name: 'Cash Book codes', sub: 'Accounts · payees · posting rules' }] : [])]]
   ];
   const isOn = it => S.tab === it.k && (it.term == null || S.termTab === it.term) && (it.pv == null || pvSel() === it.pv || (it.pv === 'ALL' && !items()[1][2].some(x => x.pv === pvSel() && x.pv !== 'ALL') && pvSel() !== 'SET')) && (it.et == null || S.eTerm === it.et) && (it.mail == null || S.qMail === it.mail);
   // a file belongs to the open project when its module matches (bus terminals: same terminal; its ledger files count too)
   const mine = f => !f.ok || (f.module === S.tab && (S.tab !== 'A' || !f.term || f.term === S.termTab)) || (S.tab === 'A' && f.module === 'L' && f.term === S.termTab) || (S.tab === 'L' && f.module === 'L');
   const count = it => it.k === 'Q' ? (typeof mlPageCount === 'function' ? mlPageCount(it.mail) : 0) : it.k === 'V' ? 0 : (S.files || []).filter(f => f.ok && f.module === it.k && (it.k !== 'A' || !f.term || f.term === it.term)).length;
-  let closed = {}; try { closed = JSON.parse(localStorage.getItem('se.side') || '{}'); } catch (e) { }
+  let openG = null;   // null = follow the page you are on
   const attrs = it => `data-act="tab" data-v="${it.k}"${it.term ? ` data-term="${esc(it.term)}"` : ''}${it.pv ? ` data-pv="${it.pv}"` : ''}${it.et ? ` data-et="${it.et}"` : ''}${it.mail ? ` data-mail="${esc(it.mail)}"` : ''}`;
 
   renderTabs = function () {
     if (S.tab === 'A' && !terms().includes(S.termTab)) S.termTab = terms()[0];
-    const G = items();
-    $('#tabs').innerHTML = G.map(([id, g, list]) => !list.length ? '' : `<div class="grp${closed[id] ? ' closed' : ''}" data-ui="grp" data-g="${id}" role="button" tabindex="0"><span>${g}</span><i class="chev">▾</i></div><div class="gbody${closed[id] ? ' closed' : ''}">` + list.map(it => { const n = count(it);
-      return `<button class="${isOn(it) ? 'on' : ''}${it.s ? ' sub' : ''}" ${attrs(it)} title="${esc(it.sub)}"><span class="tn">${esc(it.name)}</span>${it.soon ? '<span class="soon">soon</span>' : n ? `<span class="tb" title="${n} files loaded">${n}</span>` : ''}</button>`; }).join('') + '</div>').join('');
-    const cur = G.flatMap(x => x[2]).find(isOn), ph = $('#ptitle');
-    if (ph) ph.innerHTML = cur ? `<h2>${esc(cur.name)}</h2><span>${esc(cur.sub)}</span>` : '';
-    const d = $('#drop'); if (d) d.classList.toggle('mini', (S.files || []).length > 0);
+    const G = items(), actG = (G.find(x => x[2].some(isOn)) || [])[0], open = openG === null ? actG : openG;
+    // one group open at a time: the group of the page you are on, or the one you clicked
+    $('#tabs').innerHTML = G.map(([id, g, list]) => { if (!list.length) return ''; const cl = id !== open, n = list.reduce((s, it) => s + count(it), 0);
+      return `<div class="grp${cl ? ' closed' : ''}${id === actG ? ' act' : ''}" data-ui="grp" data-g="${id}" role="button" tabindex="0"><span>${g}</span>${cl && n ? `<span class="tb">${n}</span>` : ''}<i class="chev">▾</i></div><div class="gbody${cl ? ' closed' : ''}">` + list.map(it => { const c = count(it);
+      return `<button class="${isOn(it) ? 'on' : ''}${it.s ? ' sub' : ''}" ${attrs(it)} title="${esc(it.sub)}"><span class="tn">${esc(it.name)}</span>${it.soon ? '<span class="soon">soon</span>' : c ? `<span class="tb" title="${c} files loaded">${c}</span>` : ''}</button>`; }).join('') + '</div>'; }).join('');
+    const curG = G.find(x => x[2].some(isOn)), cur = curG && curG[2].find(isOn), ph = $('#ptitle');
+    const pre = curG && /^(cb|mail)$/.test(curG[0]) && !(curG[0] === 'cb' && cur.pv === 'ALL') ? `<small class="crumb">${esc(curG[1])}</small>` : '';
+    if (ph) ph.innerHTML = cur ? `${pre}<h2>${esc(cur.name)}</h2><span>${esc(cur.sub)}</span>` : '';
+    const d = $('#drop'); if (d) { d.classList.toggle('mini', (S.files || []).length > 0); d.style.display = cur && ((cur.k === 'Q' && cur.mail === 'SET') || (cur.k === 'V' && cur.pv === 'SET') || cur.k === 'P') ? 'none' : ''; }
   };
   renderChips = function () {
     const all = (S.files || []).map((f, i) => ({ f, i })), list = S.chipsAll ? all : all.filter(x => mine(x.f)), other = all.length - list.length;
@@ -6630,20 +6633,41 @@ document.addEventListener('change', async e => {
   // sidebar click: choose the terminal / voucher group / email set before the tab handler renders
   document.addEventListener('click', e => {
     const g = e.target.closest('#tabs [data-ui="grp"]');
-    if (g) { const id = g.dataset.g; closed[id] = !closed[id]; try { localStorage.setItem('se.side', JSON.stringify(closed)); } catch (er) { } renderTabs(); return; }
+    if (g) { const id = g.dataset.g, now = openG === null ? (items().find(x => x[2].some(isOn)) || [])[0] : openG; openG = now === id ? '' : id; renderTabs(); return; }
     const b = e.target.closest('#tabs button[data-act="tab"]');
-    if (b) { if (b.dataset.term) S.termTab = b.dataset.term; if (b.dataset.pv && typeof PV !== 'undefined') PV.sel = b.dataset.pv; if (b.dataset.et) S.eTerm = b.dataset.et; if (b.dataset.mail) S.qMail = b.dataset.mail; }
+    if (b) { openG = null; if (b.dataset.term) S.termTab = b.dataset.term; if (b.dataset.pv && typeof PV !== 'undefined') PV.sel = b.dataset.pv; if (b.dataset.et) S.eTerm = b.dataset.et; if (b.dataset.mail) S.qMail = b.dataset.mail; }
     const c = e.target.closest('[data-ui="chipsall"]'); if (c) { S.chipsAll = !S.chipsAll; renderChips(); }
   }, true);
   document.addEventListener('keydown', e => { const g = e.target.closest && e.target.closest('#tabs [data-ui="grp"]'); if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); g.click(); } });
   // the file list follows the open project (the tab / terminal handlers re-render the panel only)
   document.addEventListener('click', e => { if (e.target.closest('[data-act="tab"],[data-act="term"],[data-act="pvsel"]')) setTimeout(() => { renderTabs(); renderChips(); }, 0); });
+  // tidy every page after it renders: reference sections fold (click the title to open, remembered); long help text shows one line (click for more)
+  const FOLD = ['Posting rules', 'KLIA operators → AutoCount payee', 'Signatures', 'Operator emails', 'How “Open in Outlook” works', 'Paste contacts', 'Direktori email operator', 'Email Merge settings', 'Contacts', 'Sender', 'Penerima'];
+  let foldOpen = {}; try { foldOpen = JSON.parse(localStorage.getItem('se.fold') || '{}'); } catch (e) { }
+  const tidy = root => {
+    root.querySelectorAll('section.card > h3:first-child').forEach(h => {
+      const sec = h.parentElement; if (sec.dataset.fold) return; const t = h.textContent.trim(), key = FOLD.find(f => t.startsWith(f)); if (!key) return;
+      sec.dataset.fold = key; sec.classList.add('fold'); if (!foldOpen[key]) sec.classList.add('folded');
+    });
+    root.querySelectorAll('p.hint').forEach(p => { if (p.dataset.cl || p.querySelector('button,input,select,a,label')) return; p.dataset.cl = 1; if (p.textContent.length > 150) p.classList.add('clamp'); });
+  };
+  const pn = document.getElementById('panel'); if (pn) new MutationObserver(() => tidy(pn)).observe(pn, { childList: true, subtree: true });
+  document.addEventListener('click', e => {
+    const h = e.target.closest('section.fold > h3:first-child'); if (h) { const s = h.parentElement, k = s.dataset.fold; s.classList.toggle('folded'); foldOpen[k] = !s.classList.contains('folded'); try { localStorage.setItem('se.fold', JSON.stringify(foldOpen)); } catch (er) { } return; }
+    const p = e.target.closest('p.hint.clamp'); if (p) p.classList.toggle('open');
+  });
   const st = document.createElement('style');
   st.textContent = `#tabs .grp{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--ink);padding:16px 10px 7px;border-radius:6px}
   #tabs .grp:hover{background:var(--soft)}#tabs .grp .chev{font-style:normal;color:var(--mut);transition:transform .15s}#tabs .grp.closed .chev{transform:rotate(-90deg)}#tabs .gbody.closed{display:none}
   #tabs .grp:first-child{padding-top:8px}#tabs .grp+.gbody{padding-bottom:4px;border-bottom:1px solid var(--line)}#tabs .gbody:last-child{border-bottom:0}
   #tabs button{font-size:.93rem!important;font-weight:500;color:var(--ink);padding:8px 10px!important}#tabs button.sub{padding-left:24px!important;font-size:.88rem!important}
   #tabs button.on{font-weight:650}#tabs .soon{flex:none;font-size:.66rem;color:var(--mut);border:1px solid var(--line);border-radius:999px;padding:0 7px}
+  #tabs .grp .tb{margin-left:auto;margin-right:8px}#tabs .grp.act>span:first-child{color:var(--acc,#0e9fb8)}
+  #ptitle .crumb{display:block;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin-bottom:2px}
+  section.fold>h3:first-child{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px}section.fold>h3:first-child::after{content:'▾';margin-left:auto;color:var(--mut);font-size:.9rem;transition:transform .15s}
+  section.fold.folded>h3:first-child::after{transform:rotate(-90deg)}section.fold.folded>:not(h3:first-child){display:none!important}section.fold.folded{padding-top:12px;padding-bottom:12px}section.fold.folded>h3{margin:0}
+  p.hint.clamp{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer;position:relative}p.hint.clamp:not(.open)::before{content:'ⓘ ';}p.hint.clamp.open{display:block}
+  p.hint.clamp:not(.open):hover{color:var(--ink)}
   @media(max-width:1000px){#tabs .gbody,#tabs .gbody.closed{display:contents}}`;
   document.head.appendChild(st);
 })();
