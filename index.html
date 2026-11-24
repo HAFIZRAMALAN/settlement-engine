@@ -3379,10 +3379,14 @@ function pvReadPro(wb, fileName) {
   const t = (wd ? pvTxt(wd.getCell('B2').value) : '') + ' ' + fileName, hw = /SILK/i.test(t) ? 'SILK' : /LKSA/i.test(t) ? 'LKSA' : null; if (!hw) return null;
   const g = sheetGrid(ws).g, H = (g[0] || []).map(pvTxt), iD = H.indexOf('Settle Date'), iA = H.indexOf('Amount'), iP = H.indexOf('Payout'), iC = H.indexOf('Commission');
   if ([iD, iA, iP, iC].some(i => i < 0)) return null;
-  let date = null, amtC = 0, payC = 0, commC = 0;
-  g.slice(1).forEach(r => { if (r[iA] == null || r[iA] === '') return; date = date || anyDate(r[iD] instanceof Date ? r[iD] : String(r[iD])); amtC += cents(r[iA]); payC += cents(r[iP]); commC += cents(r[iC]); });
+  let date = null, amtC = 0, payC = 0, commC = 0, mdr = null; const iM = H.indexOf('MDR %');
+  g.slice(1).forEach(r => { if (r[iA] == null || r[iA] === '') return; date = date || anyDate(r[iD] instanceof Date ? r[iD] : String(r[iD])); amtC += cents(r[iA]); payC += cents(r[iP]); commC += cents(r[iC]); if (mdr == null && iM >= 0) mdr = num(r[iM]); });
   if (!date) return null;
-  return { kind: 'pro', hw, file: fileName, date, amtC, payC, commC };
+  // Summary Prolintas Sales (your master): COMMISSION = -ROUND(day's SALES × 0.9%, 2) on the day total, NET = SALES + COMMISSION.
+  // The bank file rounds each scheme row (e.g. 22/11 LKSA 49.62 vs master 49.61), so the voucher follows the master.
+  const bp = Math.round((mdr || 0.9) * 100), fileComm = commC;    // 0.90% → 90 (hundredths of a percent)
+  commC = Math.floor((amtC * bp + 5000) / 10000); payC = amtC - commC;
+  return { kind: 'pro', hw, file: fileName, date, amtC, payC, commC, fileComm, bp, cb: /CHARGE/i.test(fileName) };
 }
 // OPERATOR SETTLEMENT REPORT (<op>) <date> complete.xlsx (KLIA)
 function pvKDate(s) { const m = /(\d{1,2})\s+([A-Za-z]{3})[a-z]*\s+(\d{4})/.exec(String(s || '')); if (!m) return null; const mo = PV_MON.indexOf(m[2].toUpperCase()) + 1; return mo ? { y: +m[3], m: mo, d: +m[1] } : null; }
@@ -3393,7 +3397,7 @@ function pvReadKlia(wb, fileName) {
   const code = all[1] && all[1][3], per = all[2] && all[2][3]; if (!code || !per) return null;
   const pr = per.split(/\s+-\s+/), a = pvKDate(pr[0]), b0 = pvKDate(pr[1]); if (!a) return null;
   let to = b0 || a; if (b0 && /12:00:00\s*AM/i.test(pr[1]) && dKey(b0) > dKey(a)) { const d = toUTC(b0); d.setUTCDate(d.getUTCDate() - 1); to = fromJsDate(d); }
-  const days = {}, day = d => days[dKey(d)] = days[dKey(d)] || { date: d, sC: 0, pC: 0, inbC: 0 };
+  const days = {}, day = d => days[dKey(d)] = days[dKey(d)] || { date: d, sC: 0, pC: 0, inbC: 0, inbP: 0 };
   let iN = -1, iP = -1, iS = -1, sec = null, loanC = 0, bankC = null, detTot = null, inbTot = null;
   for (let r = 0; r < g.length; r++) {
     const R = all[r];
@@ -3405,7 +3409,7 @@ function pvReadKlia(wb, fileName) {
     const x = g[r];
     if (typeof x[1] === 'number') {
       let d = pvKDate(R[2]) || a; if (dKey(d) < dKey(a)) d = a; if (dKey(d) > dKey(to)) d = to; const D = day(d);   // a trip booked before the period belongs to the period
-      if (sec === 'det') { D.sC += cents(x[iS]); D.pC += cents(x[iP]); } else D.inbC += cents(x[iS]);
+      if (sec === 'det') { D.sC += cents(x[iS]); D.pC += cents(x[iP]); } else { D.inbC += cents(x[iS]); if (iP >= 0 && typeof x[iP] === 'number') D.inbP += cents(x[iP]); }
     } else if (iS >= 0 && typeof x[iS] === 'number') { if (sec === 'det') detTot = { N: cents(x[iN]), P: cents(x[iP]), S: cents(x[iS]) }; else inbTot = cents(x[iS]); sec = 'done'; }
   }
   const ds = Object.values(days).sort((p, q) => dKey(p.date) - dKey(q.date));
@@ -3446,25 +3450,37 @@ function pvBusVoucher(s) {
   if (!P.acc || !P.contra || !P.temp) warn.push('Account codes missing — set them in Codes');
   return { key: `bus|${s.term}|${dmyStr(s.from)}|${dmyStr(s.to)}`, grp: s.term, series: P.series, payee: P.payee, desc: `SALES [${full}]`, from: s.from, to: s.to, lines, P, srcBank: s.bankC, srcLbl: 'TOTAL BANK IN', file: s.file, warn };
 }
+function pvProMerge(list) {
+  const cbs = list.filter(d => d.cb), reg = list.filter(d => !d.cb).sort((a, b) => dKey(a.date) - dKey(b.date)), w = [];
+  if (!cbs.length || !reg.length) return { list, w };
+  const t = { ...reg[reg.length - 1] };
+  cbs.forEach(c => { t.amtC += c.amtC; t.fileComm += c.fileComm; t.file += ' + ' + c.file; w.push(`${c.file}: ${fmtC(c.amtC)} (settle date ${dmyStr(c.date)}) is added into ${dmyStr(t.date)}, as in Summary Prolintas`); });
+  t.commC = Math.floor((t.amtC * (t.bp || 90) + 5000) / 10000); t.payC = t.amtC - t.commC;
+  return { list: reg.slice(0, -1).concat(t), w };
+}
 function pvProVoucher(hw, list) {
+  // a CHARGES BACK file (e.g. -1.66 settled 27/10, paid with 02/11) goes into the day it was paid with, and the
+  // commission is rounded on that combined day, exactly like Summary Prolintas (02/11 SILK 11,186.74 / -100.68)
+  const m = pvProMerge(list), cbW = m.w; list = m.list;
   const P = pvP(hw), days = list.slice().sort((a, b) => dKey(a.date) - dKey(b.date)), from = days[0].date, to = days[days.length - 1].date, full = rangeText(from, to);
   const prev = days.filter(d => pvMk(d.date) < pvMk(to)), cur = days.filter(d => pvMk(d.date) === pvMk(to)), lines = [], warn = [];
   const span = ds => rangeText(ds[0].date, ds[ds.length - 1].date), sum = (ds, k) => ds.reduce((a, d) => a + d[k], 0);
   if (prev.length) lines.push(pvL(P.temp, `PROLINTAS SETTLEMENT [${hw} ${span(prev)}]`, sum(prev, 'payC'), P.tempD));
   if (cur.length) { lines.push(pvL(P.acc, `PROLINTAS SETTLEMENT [${hw} ${span(cur)}]`, sum(cur, 'amtC'), P.accD)); lines.push(pvL(P.contra, `PROLINTAS COMMISSION [${hw} ${span(cur)}]`, -sum(cur, 'commC'), P.contraD)); }
-  days.forEach(d => { if (d.amtC - d.commC !== d.payC) warn.push(`${dmyStr(d.date)}: Amount − Commission ≠ Payout`); });
+  days.forEach(d => { if (d.fileComm != null && d.fileComm !== d.commC) warn.push(`${dmyStr(d.date)}: commission ${fmtC(d.commC)} = ROUND(sales × 0.9%) as in Summary Prolintas (bank file rows add up to ${fmtC(d.fileComm)})`); });
+  warn.push(...cbW);
   const gap = allDays(from, to).filter(d => !days.some(x => dKey(x.date) === dKey(d))); if (gap.length) warn.push('No file for ' + gap.map(dmyStr).join(', '));
-  return { key: `pro|${hw}|${dmyStr(from)}|${dmyStr(to)}`, grp: hw, series: P.series, payee: P.payee, desc: `SALES [${full}]`, from, to, lines, P, srcBank: sum(days, 'payC'), srcLbl: 'Payout (Summary)', file: days.map(d => d.file).join(' + '), warn };
+  return { key: `pro|${hw}|${dmyStr(from)}|${dmyStr(to)}`, grp: hw, series: P.series, payee: P.payee, desc: `SALES [${full}]`, from, to, lines, P, srcBank: sum(days, 'payC'), srcLbl: 'NET (Summary Prolintas)', file: days.map(d => d.file).join(' + '), warn };
 }
 function pvKliaVoucher(k) {
   const P = pvP('KLIA'), payee = pvCfg().kops[k.code] || '', full = rangeText(k.from, k.to), lines = [], warn = [];
   const prev = k.days.filter(d => pvMk(d.date) < pvMk(k.to)), cur = k.days.filter(d => pvMk(d.date) === pvMk(k.to));
   const span = ds => rangeText(ds[0].date, ds[ds.length - 1].date), sum = (ds, f) => ds.reduce((a, d) => a + f(d), 0);
   if (prev.length) lines.push(pvL(P.temp, `SALES [${span(prev)}]`, sum(prev, d => d.sC + d.inbC), P.tempD));
-  if (cur.length) { const rc = span(cur); lines.push(pvL(P.acc, `SALES [${rc}]`, sum(cur, d => d.sC - d.pC + d.inbC), P.accD)); lines.push(pvL(P.contra, `COMMISION [${rc}]`, sum(cur, d => d.pC), P.contraD)); }
+  if (cur.length) { const rc = span(cur); lines.push(pvL(P.acc, `SALES [${rc}]`, sum(cur, d => d.sC - d.pC + d.inbC - d.inbP), P.accD)); lines.push(pvL(P.contra, `COMMISION [${rc}]`, sum(cur, d => d.pC + d.inbP), P.contraD)); }
   if (k.loanC) lines.push(pvL(P.loan, `DEDUCTION LOAN SETTLEMENT ${pvMonLbl(k.from)}  [${full}]`, -Math.abs(k.loanC), P.loanD));
   if (!payee) warn.push(`Operator "${k.code}" has no AutoCount payee — set it in Codes`);
-  if (k.days.some(d => d.inbC)) warn.push(`Inbound ${fmtC(sum(k.days, d => d.inbC))} is included in SALES (as on the report's TOTAL BANK IN)`);
+  if (k.days.some(d => d.inbC)) warn.push(`Inbound trips included like the others: SALES + ${fmtC(sum(k.days, d => d.inbC - d.inbP))}, COMMISION ${fmtC(sum(k.days, d => d.inbP))} (as in your M3TPV vouchers)`);
   if (k.detTot && k.detTot.S !== sum(k.days, d => d.sC)) warn.push('Trip lines do not add up to the report total');
   const bank = k.bankC != null ? k.bankC : (k.detTot ? k.detTot.S : 0) + (k.inbTot || 0) - Math.abs(k.loanC);
   return { key: `klia|${k.code}|${dmyStr(k.from)}|${dmyStr(k.to)}`, grp: 'KLIA', series: P.series, payee: payee || k.code, desc: lines.length ? lines[0].desc : `SALES [${full}]`, from: k.from, to: k.to, lines, P, srcBank: bank, srcLbl: k.bankC != null ? 'TOTAL BANK IN' : 'Payable', file: k.file, warn, op: k.code };
@@ -3607,7 +3623,7 @@ async function pvIngest(file) {
   const b = typeof isCompletedSettlement === 'function' && isCompletedSettlement(wb) ? pvReadBus(wb, file.name) : null;
   if (b) { PV.bus[b.term + dmyStr(b.from) + dmyStr(b.to)] = b; Object.assign(chip, { ok: true, kind: `PV · Daily Settlement ${b.term}`, date: rangeText(b.from, b.to), note: `TOTAL BANK IN ${fmtC(b.bankC)}` }); return chip; }
   const p = pvReadPro(wb, file.name);
-  if (p) { (PV.pro[p.hw] = PV.pro[p.hw] || {})[dKey(p.date)] = p; Object.assign(chip, { ok: true, kind: `PV · Prolintas ${p.hw}`, date: dmyStr(p.date), note: `Payout ${fmtC(p.payC)}` }); return chip; }
+  if (p) { (PV.pro[p.hw] = PV.pro[p.hw] || {})[p.cb ? 'cb|' + p.file : dKey(p.date)] = p; Object.assign(chip, { ok: true, kind: `PV · Prolintas ${p.hw}`, date: dmyStr(p.date), note: `Payout ${fmtC(p.payC)}` }); return chip; }
   const k = pvReadKlia(wb, file.name);
   if (k) { PV.klia[k.code + dmyStr(k.from)] = k; Object.assign(chip, { ok: true, kind: `PV · KLIA ${pvCfg().kops[k.code] ? k.code : k.code + ' (no payee)'}`, date: rangeText(k.from, k.to), note: k.bankC != null ? `TOTAL BANK IN ${fmtC(k.bankC)}` : '' }); return chip; }
   return null;
@@ -4208,7 +4224,10 @@ const ML_TPL0 = {
   CASHLESS: { name: 'Cashless sales report · per operator', when: 'range', back: 0, per: 'cash', to: '', cc: 'Fazniel Nasyraaf Abdul Rauf; Muhammad Nurhafiz Mohd Ramalan; Aliff Haiqal Bin Badrul Hisyam; Tan Shou Chuan', subject: 'CASHLESS SALES REPORT {FROM} - {TO}', body: 'Dear Sir/Madam,\n\nPlease find attached the sales report for CASHLESS covering the period from {FROM} - {TO}.\nKindly let us know if you require any further information or clarification.\n\nThank you.', sig: 'DEPT', files: 'Reports 09-15 Nov 2026.zip (or the CASHLESS <operator> ddmmyy-ddmmyy.pdf files) — one email per operator, email from Bus Operators Summary (Bank in template CASHLESS)' },
   SBST: { name: 'SBST & MY30 sales report · per operator', when: 'range', back: 0, per: 'cash', to: '', cc: 'Fazniel Nasyraaf Abdul Rauf; Tan Shou Chuan; Aliff Haiqal Bin Badrul Hisyam', subject: 'Submission of SBST & MY30 Sales Report {FROM} - {TO}', body: 'Dear Sir/Madam,\n\nPlease find attached the sales report for SBST & MY30 covering the period from {FROM} - {TO}.\nKindly let us know if you require any further information or clarification.\n\nThank you.', sig: 'DEPT', files: 'Same Reports zip — the SBST MY30 <operator> ….pdf files, one email per operator' }
 };
-const ML_PAGES = { OPPAY: ['OPPAY'], PRO: ['PRO_LKSA', 'PRO_SILK'], KLIA: ['KLIA'], KTMB: ['KTMB'], FERRY: ['MERSING', 'TG'], CASH: ['CASHLESS', 'SBST'] };
+// Operator Payment MS: same email as KT, operator email from the MS email directory (Email · Melaka Sentral);
+// Cc as in your sent MS emails (23/11/2026 "Operator Payment Report Submission – 20 - 22 NOV' 2026")
+ML_TPL0.OPPAY_MS = { ...ML_TPL0.OPPAY, name: 'Operator Payment Report · MS', term: 'MS', cc: 'Aliff Haiqal Bin Badrul Hisyam; Muhammad Nurhafiz Mohd Ramalan; Wan Mohd Firdaous Bin Wan Ngah; FINANCE - NSS IT SOLUTION SDN BHD <finance.nssit@gohub.com.my>', files: 'OperatorPayment MS <code> ….pdf — one email per operator email (KEMB55 + MUSAFIR together)' };
+const ML_PAGES = { OPPAY: ['OPPAY'], OPPAYMS: ['OPPAY_MS'], PRO: ['PRO_LKSA', 'PRO_SILK'], KLIA: ['KLIA'], KTMB: ['KTMB'], FERRY: ['MERSING', 'TG'], CASH: ['CASHLESS', 'SBST'] };
 // operator name in the report file → code in Bus Operators Summary (Bank in template CASHLESS); new ones are asked once and saved
 const ML_ALIAS0 = { 'GOPI': 'GOPI', 'GREEN TRANSIT LINER': 'GTL', 'LEAN HOCK BUS SDN BHD': 'LH', 'LEAN HOCK': 'LH', 'PERAK TRANSIT': 'PT', 'REDOMNI': 'RED OMNI', 'SP BUMI': 'SP BUMI', 'SOUTHERN': 'SOUTHERN OMNI', 'THE WAI THONG OMNIBUS': 'WAI THONG', 'WAWASAN SUTERA': 'WAWASAN', 'YOW HOE BUS': 'YHB', 'KR TRAVEL': 'KR', 'BLUE OMNI': 'BLUE OMNI', 'HUP SOON': 'HUPSOON', 'MUTIARA': 'MUTIARA' };
 // subject tag = the operator code in the report file names, e.g. OPERATOR SETTLEMENT REPORT (GEMBIRACE) → [GEMBIRACE];
@@ -4240,7 +4259,7 @@ function mlCfg() {
   if (!c.people) c.people = ML_PEOPLE0.map(([name, email]) => ({ name, email }));
   ML_PEOPLE0.forEach(([name, email]) => { const p = c.people.find(x => x.name.toLowerCase() === name.toLowerCase()); if (!p) c.people.push({ name, email }); else if (!p.email && email) p.email = email; });
   c.dir = c.dir || {}; ['CASH', 'KLIA'].forEach(k => { c.dir[k] = c.dir[k] || {}; });
-  c.alias = c.alias || {}; c.kops = c.kops || {};
+  c.alias = c.alias || {}; c.kops = c.kops || {}; c.rcpt = c.rcpt || {};
   return c;
 }
 const mlSave = () => DB.set('mailCfg', ML.cfg);
@@ -4264,7 +4283,8 @@ function mlTokens(id, extra) {
   V.DATE = two ? `${mlDmy(a)} - ${mlDmy(b)}` : mlDmy(a); V.FROM = mlDmy(a); V.TO = mlDmy(b || a);
   const list = []; for (let d = a; d <= (b || a) && list.length < 62; d = mlAdd(d, 1)) list.push(mlDmy(d));
   V.DATES = list.length > 2 ? list.slice(0, -1).join(', ') + ' & ' + list[list.length - 1] : list.join(' & ');
-  V.DMON = `${a.getDate()} ${mlMon[a.getMonth()]}' ${a.getFullYear()}`;
+  // 22 NOV' 2026 · a period: 20 - 22 NOV' 2026 (as in your MS email) · across months: 30 OCT' - 01 NOV' 2026
+  V.DMON = !two ? `${a.getDate()} ${mlMon[a.getMonth()]}' ${a.getFullYear()}` : a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear() ? `${a.getDate()} - ${b.getDate()} ${mlMon[a.getMonth()]}' ${a.getFullYear()}` : `${a.getDate()} ${mlMon[a.getMonth()]}' - ${b.getDate()} ${mlMon[b.getMonth()]}' ${b.getFullYear()}`;
   const k = d => `${mlPad(d.getDate())}.${mlPad(d.getMonth() + 1)}.${String(d.getFullYear()).slice(2)}`, l = d => `${d.getDate()} ${mlMonT[d.getMonth()]} ${d.getFullYear()}`;
   const b2 = b || mlAdd(a, 1); V.K1 = k(a); V.K2 = k(b2); V.L1 = l(a); V.L2 = l(b2);
   return { ...V, ...(extra || {}) };
@@ -4314,7 +4334,12 @@ function mlRoute(name) {
   if (/REVENUESHARING/.test(U)) return { id: 'KTMB' };
   if ((m = /^CASHLESS\s+(.+?)\s+(\d{6})\s*-\s*(\d{6})$/.exec(U))) return { id: 'CASHLESS', op: m[1], date: mlD6(m[2]), date2: mlD6(m[3]) };
   if ((m = /^SBST\s*&?\s*MY30\s+(.+?)\s+(\d{6})\s*-\s*(\d{6})$/.exec(U))) return { id: 'SBST', op: m[1], date: mlD6(m[2]), date2: mlD6(m[3]) };
-  if ((m = /OPERATOR\s*PAYMENT\s+(KT|MS)\s+([A-Z0-9]+)/.exec(U.replace(/OPERATORPAYMENT/, 'OPERATOR PAYMENT')))) return { id: 'OPPAY', op: m[2] };
+  // OperatorPayment MS LA HOLIDAYS 261120 - 22.pdf → MS, "LA HOLIDAYS", 20/11/2026 - 22/11/2026 (the email date comes from the file)
+  if ((m = /OPERATOR\s*PAYMENT\s+(KT|MS)\s+(.+?)(?:\s+(\d{6})(?:\s*-\s*(\d{6}|\d{2}))?)?\s*(?:\(\d+\))?\s*$/.exec(U.replace(/\.[A-Z0-9]+$/, '').replace(/OPERATORPAYMENT/, 'OPERATOR PAYMENT')))) {
+    const d1 = m[3] ? mlY6(m[3]) : null; let d2 = null;
+    if (d1 && m[4]) d2 = m[4].length === 6 ? mlY6(m[4]) : (() => { const x = new Date(d1.getFullYear(), d1.getMonth(), +m[4]); return x < d1 ? new Date(d1.getFullYear(), d1.getMonth() + 1, +m[4]) : x; })();
+    return { id: m[1] === 'MS' ? 'OPPAY_MS' : 'OPPAY', op: m[2].trim(), ...(d1 ? { date: d1 } : {}), ...(d2 && +d2 !== +d1 ? { date2: d2 } : {}) };
+  }
   if (/OPERATOR SETTLEMENT REPORT/.test(U) && /\bCOMPLETE\b/.test(U)) return { kind: 'skip', why: '“complete” copy — the plain report is the one emailed' };
   const kc = /INTEGRATION|OPERATOR SETTLEMENT|TQMS|DEBIT ADVICE/.test(U) ? mlKliaOp(U) : '';
   if (kc) return { id: 'KLIA', op: kc, klia: /OPERATOR SETTLEMENT REPORT/.test(U) };
@@ -4330,14 +4355,21 @@ function mlCashCode(op) {
   const hit = Object.entries(D).filter(([c, x]) => { const nm = mlKeyN(x.name); return words.length && words.every(w => nm.includes(w)); });
   return hit.length === 1 ? hit[0][0] : '';
 }
-function mlKtDir(code) {
-  const D = (typeof S !== 'undefined' && S.E && S.E.dir && S.E.dir.KT) || {}; let best = null;
+function mlKtDir(code, term) {
+  code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const D = (typeof S !== 'undefined' && S.E && S.E.dir && S.E.dir[term || 'KT']) || {}; let best = null;
   Object.entries(D).forEach(([k, x]) => { const kk = String(k).toUpperCase().replace(/[^A-Z0-9]/g, ''); if (kk && (code === kk || code.startsWith(kk) || kk.startsWith(code)) && (!best || kk.length > best.k.length)) best = { k: kk, x }; });
   return best && best.x;
 }
 
 /* ---- the emails of a template (per operator where the template says so) ---- */
+// To / Cc changed on an email card (× on a name, or type a name / address) — kept for that email next time too
+const mlRcStr = L => L.map(r => r.email ? (r.name ? `${r.name} <${r.email}>` : r.email) : r.name).filter(Boolean).join('; ');
 function mlEmails(id) {
+  const R = mlCfg().rcpt;
+  return mlEmails0(id).map(e => { const o = R[e.key]; if (!o) return e; return { ...e, to: o.to != null ? mlRcpt(o.to) : e.to, cc: o.cc != null ? mlRcpt(o.cc) : e.cc, rcEd: true }; });
+}
+function mlEmails0(id) {
   const t = mlT(id), base = { id, cc: mlRcpt(t.cc), sig: t.sig }, att = ML.att[id] || [];
   if (t.per === 'klia') {
     return mlKops().filter(o => (ML.kon[o.code] != null ? ML.kon[o.code] : (att.length ? att.some(a => a.op === o.code) : o.on))).map(o => {
@@ -4352,7 +4384,7 @@ function mlEmails(id) {
     const G = new Map();
     att.forEach(a => {
       let key, to, title, code = '';
-      if (t.per === 'kt') { const x = mlKtDir(a.op || ''); code = a.op || '?'; key = x && x.to ? 'e:' + x.to.toLowerCase() : 'c:' + code; to = x && x.to ? [{ name: x.name || '', email: x.to }] : []; title = x ? (x.name || code) : code; }
+      if (t.per === 'kt') { const x = mlKtDir(a.op || '', t.term || 'KT'); code = a.op || '?'; key = x && x.to ? 'e:' + x.to.toLowerCase() : 'c:' + code; to = x && x.to ? [{ name: x.name || '', email: x.to }] : []; title = x ? (x.name || code) : code; }
       else { code = mlCashCode(a.op); const x = code && mlDir('CASH')[code]; key = code ? 'c:' + code : 'o:' + mlKeyN(a.op); to = x ? mlRcpt(x.to) : []; title = x ? `${x.name} (${code})` : a.op; }
       if (!G.has(key)) G.set(key, { codes: [], to, title, att: [], raw: a.op, code }); const g = G.get(key); if (code && !g.codes.includes(code)) g.codes.push(code); g.att.push(a);
     });
@@ -4472,7 +4504,10 @@ async function mlKliaRead(a) {
     if (r > 4 && typeof row.getCell(2).value === 'number') { let hl = false; row.eachCell(c => { const f = c.fill; if (f && f.fgColor && /FDEADA$/i.test(f.fgColor.argb || '')) hl = true; }); if (hl) n++; }
   });
   const md = p => { const mi = mlMonT.findIndex(x => x.toLowerCase() === p[1].slice(0, 3).toLowerCase()); return mi < 0 ? null : new Date(+p[2], mi, +p[0]); };
-  if (per) { const d1 = md(per[0]), d2 = md(per[1]); if (d1 && d2) { ML.d.KLIA = { a: mlIso(d1), b: mlIso(d2) }; } }
+  // your KLIA emails are dated one day back from the report header: report 19 Nov 12AM - 20 Nov 12AM (file 19112026)
+  // was sent as "18.11.26 - 19.11.26", so both ends move back one day
+  const back = d => new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+  if (per) { const d1 = md(per[0]), d2 = md(per[1]); if (d1 && d2) { ML.d.KLIA = { a: mlIso(back(d1)), b: mlIso(back(d2)) }; } }
   if (a.op) ML.corp[a.op] = n || '';
 }
 async function mlAddFiles(files, quiet) {
@@ -4508,6 +4543,9 @@ const mlPageCount = pg => (ML_PAGES[pg] || []).reduce((s, id) => s + (ML.att[id]
 
 /* ---- UI ---- */
 const mlChip = r => `<span class="mlc ${r.email ? '' : 'bad'}" title="${esc(r.email || 'No email address')}">${esc(r.name || r.email)}${r.name && r.email ? ` <small>&lt;${esc(r.email)}&gt;</small>` : ''}</span>`;
+const mlChipX = (e, f) => (r, i) => `<span class="mlc ${r.email ? '' : 'bad'}" title="${esc(r.email || 'No email address')}">${esc(r.name || r.email)}${r.name && r.email ? ` <small>&lt;${esc(r.email)}&gt;</small>` : ''}<button class="mlx" data-act="mlrcx" data-k="${esc(e.key)}" data-f="${f}" data-i="${i}" title="Remove ${esc(r.name || r.email)}">×</button></span>`;
+const mlRcAdd = (e, f) => `<input class="in mlrcin" list="mlppl-dl" data-act="mlrcadd" data-k="${esc(e.key)}" data-f="${f}" placeholder="+ add name or email" title="Type a contact name or an email address, then Enter">`;
+const mlPplDl = () => `<datalist id="mlppl-dl">${mlCfg().people.filter(p => p.email).map(p => `<option value="${esc(p.name ? `${p.name} <${p.email}>` : p.email)}">`).join('')}</datalist>`;
 const mlKB = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
 function mlCard(e, i, n) {
   const pr = mlProblems(e), D = mlDir('CASH');
@@ -4517,8 +4555,8 @@ function mlCard(e, i, n) {
     <button class="btn" data-act="mlcopy" data-k="${esc(e.key)}" title="Copies the body + signature (with banner) to paste into any email">Copy body</button></div>
   <div class="mlhead">
     <div><b>From</b><span>${esc(mlCfg().from.name)} &lt;${esc(mlCfg().from.email)}&gt;</span></div>
-    <div><b>To</b><span>${e.to.map(mlChip).join('') || '<span class="mlc bad">— none —</span>'}</span></div>
-    <div><b>Cc</b><span>${e.cc.map(mlChip).join('') || '<span class="muted">—</span>'}</span></div>
+    <div><b>To</b><span>${e.to.map(mlChipX(e, 'to')).join('') || '<span class="mlc bad">— none —</span>'}${mlRcAdd(e, 'to')}</span></div>
+    <div><b>Cc</b><span>${e.cc.map(mlChipX(e, 'cc')).join('')}${mlRcAdd(e, 'cc')}${e.rcEd ? ` <button class="lnk" data-act="mlrcreset" data-k="${esc(e.key)}" title="Put back the To / Cc from the template / directory">reset To/Cc</button>` : ''}</span></div>
     <div><b>Subject</b><span class="mlsub">${esc(e.subject)}</span></div>
     <div><b>Attach</b><span>${e.att.map(a => `<span class="mlatt">📎 ${esc(a.name)} <small>${mlKB(a.size)}</small><button data-act="mlrm" data-id="${esc(e.id)}" data-n="${esc(a.name)}" title="Remove">×</button></span>`).join('') || '<span class="muted">Drop the files here or anywhere on the page</span>'} <label class="btn mlpick">+ Attach<input type="file" multiple data-act="mlpick" data-id="${esc(e.id)}" data-op="${esc(e.op || '')}" hidden></label></span></div>
   </div>
@@ -4533,7 +4571,7 @@ function mlTplEditor(id) {
   const t = mlT(id), sigs = mlCfg().sig, ed = !!mlCfg().tpl[id];
   const ta = (f, rows, ph) => `<textarea class="in mlta" rows="${rows}" data-act="mltpl" data-id="${id}" data-f="${f}" placeholder="${esc(ph || '')}">${esc(t[f] || '')}</textarea>`;
   return `<details class="card mled"${ML.open === id ? ' open' : ''} data-mlopen="${id}"><summary><b>Edit template · ${esc(t.name)}</b> <span class="muted">(To, Cc, subject, wording, signature — saved for next time)</span>${ed ? ' <span class="pill">edited</span>' : ''}</summary>
-  ${t.per ? `<p class="hint">To comes from the operator (${t.per === 'kt' ? 'KT email directory — Email · Kuala Terengganu' : t.per === 'klia' ? 'operator table above' : 'Bus Operators Summary · Bank in template CASHLESS — drop a newer file to update'}).</p>` : `<label class="mlrow"><span>To</span>${ta('to', 2, 'Name <email>; email; …')}</label>`}
+  ${t.per ? `<p class="hint">To comes from the operator (${t.per === 'kt' ? (t.term === 'MS' ? 'MS email directory — Email · Melaka Sentral' : 'KT email directory — Email · Kuala Terengganu') : t.per === 'klia' ? 'operator table above' : 'Bus Operators Summary · Bank in template CASHLESS — drop a newer file to update'}).</p>` : `<label class="mlrow"><span>To</span>${ta('to', 2, 'Name <email>; email; …')}</label>`}
   <label class="mlrow"><span>Cc</span>${ta('cc', 2, 'Name <email>; Name (from contacts); …')}</label>
   <label class="mlrow"><span>Subject</span><input class="in" data-act="mltpl" data-id="${id}" data-f="subject" value="${esc(t.subject)}"></label>
   <label class="mlrow"><span>${id === 'KLIA' ? 'Wording<small>debit advice attached (e.g. ALM)</small>' : 'Wording'}</span>${ta('body', 14)}</label>
@@ -4606,7 +4644,7 @@ EXT.render.Q = function () {
   <p class="hint">📎 <b>Drop the files</b> (or a whole folder's files / the zip) anywhere on this page${files ? `: <i>${esc(files)}</i>` : ''}. Each file goes to its email by its name and the date is taken from the name.</p>
   ${t.note ? `<p class="hint">ℹ ${esc(t.note)}</p>` : ''}</section>`;
   if (id === 'KLIA') h += mlKliaTable();
-  h += E.length ? E.map((e, i) => mlCard(e, i, E.length)).join('') : `<section class="card"><p class="muted">${id === 'KLIA' ? 'Tick at least one operator above.' : 'Drop the files to make one email per operator.'}</p></section>`;
+  h += E.length ? mlPplDl() + E.map((e, i) => mlCard(e, i, E.length)).join('') : `<section class="card"><p class="muted">${id === 'KLIA' ? 'Tick at least one operator above.' : 'Drop the files to make one email per operator.'}</p></section>`;
   h += mlTplEditor(id);
   panel().innerHTML = h; if (needH) hs();
 };
@@ -4625,9 +4663,13 @@ let ML_HF = null;
     const isMail = f => { const r = mlRoute(f.name) || {}; if (/^Reports\b.*\.zip$/i.test(f.name)) return true; if (r.id === 'KLIA' || (r.kind === 'skip' && /OPERATOR SETTLEMENT/i.test(f.name))) return S.tab !== 'V'; return /\.pdf$/i.test(f.name) && !!r.id; };
     const isRaw = async f => { if (!/\.xlsx$/i.test(f.name) || typeof ExcelJS === 'undefined') return false; try { const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await f.arrayBuffer()); let raw = false; const ws = wb.worksheets[0]; if (ws) ws.eachRow((row, r) => { if (r <= 15) row.eachCell(c => { if (/^\s*Company\s*:/i.test(mlCellTxt(c))) raw = true; }); }); return raw; } catch (e) { return false; } };
     const mail = []; for (const f of arr) if (isMail(f) && !(await isRaw(f))) mail.push(f);
-    const rest = arr.filter(f => !mail.includes(f));
+    // a KLIA .xlsx (raw ALM integration, operator settlement report) is BOTH the settlement raw file and an email
+    // attachment: it goes to the settlement engine, and is also attached to the KLIA email quietly (no page switch)
+    const both = mail.filter(f => /\.xlsx$/i.test(f.name) && (mlRoute(f.name) || {}).id === 'KLIA'), only = mail.filter(f => !both.includes(f));
+    const rest = arr.filter(f => !only.includes(f));
     if (rest.length) await ML_HF(rest);
-    if (mail.length) { S.tab = 'Q'; ML.page = S.qMail = ''; await mlAddFiles(mail); }
+    if (both.length) { try { await mlAddFiles(both, true); } catch (er) { } }
+    if (only.length) { S.tab = 'Q'; ML.page = S.qMail = ''; await mlAddFiles(only); }
   };
   const find = k => { for (const id of ML_PAGES[ML.page] || []) { const e = mlEmails(id).find(x => x.key === k); if (e) return e; } };
   document.addEventListener('click', async e => {
@@ -4644,6 +4686,8 @@ let ML_HF = null;
     else if (a === 'mlrm') { const L = ML.att[b.dataset.id] || [], i = L.findIndex(x => x.name === b.dataset.n); if (i >= 0) L.splice(i, 1); renderAll(); }
     else if (a === 'mlclr') { ML.att[b.dataset.id] = []; ML.kon = {}; renderAll(); }
     else if (a === 'mlunedit') { delete ML.edit[b.dataset.k]; renderAll(); }
+    else if (a === 'mlrcx') { const m = find(b.dataset.k); if (!m) return; const f = b.dataset.f, L = m[f].slice(); L.splice(+b.dataset.i, 1); const C = mlCfg(); C.rcpt[m.key] = { to: mlRcStr(m.to), cc: mlRcStr(m.cc), [f]: mlRcStr(L) }; await mlSave(); renderAll(); }
+    else if (a === 'mlrcreset') { delete mlCfg().rcpt[b.dataset.k]; await mlSave(); renderAll(); }
     else if (a === 'mlreset') { if (!confirm('Put back the original To, Cc, subject, wording and signature of this template?')) return; delete mlCfg().tpl[b.dataset.id]; ML.edit = {}; await mlSave(); renderAll(); }
     else if (a === 'mlpaste') {
       const c = mlCfg(), v = ($('#ml-paste') || {}).value || ''; let add = 0, upd = 0;
@@ -4665,6 +4709,12 @@ let ML_HF = null;
     else if (a === 'mltpl') { c.tpl[t.dataset.id] = { ...(c.tpl[t.dataset.id] || {}), [t.dataset.f]: t.value }; ML.edit = {}; await mlSave(); }
     else if (a === 'mlkop') { c.kops[t.dataset.c] = { ...(c.kops[t.dataset.c] || {}), [t.dataset.f]: t.value.trim() }; ML.edit = {}; await mlSave(); }
     else if (a === 'mlkto' || a === 'mldir') { const g = a === 'mlkto' ? 'KLIA' : t.dataset.g, D = mlDir(g); c.dir[g][t.dataset.c] = { ...(D[t.dataset.c] || {}), to: t.value.trim() }; await mlSave(); }
+    else if (a === 'mlrcadd') {
+      const m = find(t.dataset.k), add = mlRcpt(t.value), f = t.dataset.f; if (!m || !add.length) return;
+      const badA = add.filter(r => !r.email); if (badA.length) { toast(`${badA.map(r => r.name).join(', ')}: not in Contacts — type the email address, or add the person in Contacts`, 'bad'); return; }
+      const L = m[f].concat(add.filter(r => !m[f].some(x => x.email && x.email.toLowerCase() === r.email.toLowerCase())));
+      c.rcpt[m.key] = { to: mlRcStr(m.to), cc: mlRcStr(m.cc), [f]: mlRcStr(L) }; await mlSave(); toast(`${add.map(r => r.name || r.email).join(', ')} added to ${f === 'to' ? 'To' : 'Cc'} — kept for this email next time`);
+    }
     else if (a === 'mlalias') { if (!t.value) return; c.alias[t.dataset.op] = t.value; await mlSave(); toast(`Saved: ${t.dataset.op} = ${t.value}`); }
     else if (a === 'mlkon') ML.kon[t.dataset.c] = t.checked;
     else if (a === 'mlkdrop') ML.kop = t.dataset.c;
@@ -4682,7 +4732,7 @@ let ML_HF = null;
   .mlhead>div{display:flex;gap:10px;padding:7px 10px;border-bottom:1px solid var(--line);align-items:flex-start}.mlhead>div:last-child{border-bottom:0}.mlhead b{flex:none;width:62px;color:var(--mut);font-weight:600}
   .mlmode{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px;background:var(--soft)}.mlmode>b{display:block;font-size:.8rem;color:var(--mut);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}.mlnow{background:#fff3c4;border:1px solid #f0c94a;border-radius:6px;padding:8px 10px;font-size:.86rem;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.mlnow .mlatt{cursor:grab;background:#fff}.ml-hs.ok{background:#e6f6ec;color:#1b6b3a}.ml-hs.bad{background:#fde8e8;color:#9b1c1c}.mlhead span{display:flex;flex-wrap:wrap;gap:5px;align-items:center}.mlsub{font-weight:600}.mlc{display:inline-flex;gap:4px;align-items:center;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:.82rem}
   .mlc small{color:var(--mut)}.mlc.bad{background:#fde8e8;border-color:#f3a9a9;color:#9b1c1c}.mlatt{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:.82rem}
-  .mlatt button{border:0;background:none;cursor:pointer;color:var(--mut);font-size:1rem}.mlpick{padding:2px 10px!important;font-size:.8rem!important;cursor:pointer}
+  .mlatt button,.mlx{border:0;background:none;cursor:pointer;color:var(--mut);font-size:1rem;line-height:1;padding:0 0 0 2px}.mlx:hover,.mlatt button:hover{color:#c0392b}.mlrcin{width:190px;padding:2px 10px!important;font-size:.8rem!important;border-radius:999px!important;border-style:dashed!important;background:transparent}.mlpick{padding:2px 10px!important;font-size:.8rem!important;cursor:pointer}
   .mlwarn{background:#fff6e0;border:1px solid #f0d58a;color:#7a5600;border-radius:6px;padding:7px 10px;font-size:.84rem;margin-bottom:10px}
   .mlpaper{background:#fff;color:#000;border:1px solid var(--line);border-radius:8px;padding:18px 22px;overflow:auto}.mlbody{outline:none;border-radius:4px}.mlbody:focus{box-shadow:0 0 0 2px #0e9fb855}
   .mled summary{cursor:pointer;padding:2px 0}.mled[open] summary{margin-bottom:10px}.mlrow{display:grid;grid-template-columns:120px minmax(0,1fr);gap:12px;align-items:start;margin:10px 0}.mlrow>span{font-size:.85rem;color:var(--mut);padding-top:8px;font-weight:600}.mlrow>span small{display:block;font-weight:400;font-size:.75rem;margin-top:2px}.mlrow .in,.mlrow .mlta{width:100%!important;max-width:none!important;box-sizing:border-box}.mlta{font:inherit;font-size:.9rem;line-height:1.5;resize:vertical;padding:8px 10px}.mlrow select.in{width:auto!important;min-width:280px}.mlgrid{max-width:720px}.mlhead .in,.mled .in{max-width:none}@media(max-width:700px){.mlrow{grid-template-columns:1fr;gap:4px}.mlrow>span{padding-top:0}}`;
@@ -6423,7 +6473,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v58';
+  const VER = 'v59';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6482,7 +6532,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v58';
+const SE_VER = 'v59';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
@@ -6599,7 +6649,7 @@ document.addEventListener('change', async e => {
       { k: 'V', pv: 'FERRY', name: 'Ferry', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'TBS', name: 'TBS', sub: 'PV · M1TPV', s: 1 }] : []],
     ['mail', 'Email', [
       ...(has('E') ? [{ k: 'E', et: 'KT', name: 'Kuala Terengganu', sub: 'Daily settlement to operators' }, { k: 'E', et: 'MS', name: 'Melaka Sentral', sub: 'Daily settlement to operators' }] : []),
-      { k: 'Q', mail: 'OPPAY', name: 'Operator Payment KT', sub: 'Operator Payment Report' }, { k: 'Q', mail: 'PRO', name: 'Prolintas', sub: 'LKSA · SILK settlement' },
+      { k: 'Q', mail: 'OPPAY', name: 'Operator Payment KT', sub: 'Operator Payment Report' }, { k: 'Q', mail: 'OPPAYMS', name: 'Operator Payment MS', sub: 'Operator Payment Report' }, { k: 'Q', mail: 'PRO', name: 'Prolintas', sub: 'LKSA · SILK settlement' },
       { k: 'Q', mail: 'KLIA', name: 'KLIA TQMS', sub: 'One email per operator' }, { k: 'Q', mail: 'KTMB', name: 'KTMB', sub: 'ETS & Komuter revenue sharing' },
       { k: 'Q', mail: 'FERRY', name: 'Mersing · Tanjung Gemok', sub: 'Settlement statement' }, { k: 'Q', mail: 'CASH', name: 'Cashless · SBST & MY30', sub: 'Weekly sales report, one per operator' },
       { k: 'Q', mail: 'SET', name: 'Contacts & signature', sub: 'Sender · contacts · signature · how to send', s: 1 }]],
