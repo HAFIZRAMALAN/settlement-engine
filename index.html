@@ -2878,7 +2878,7 @@ function renderE() {
   <p class="hint">Columns (Excel header → Word field): ${P.cols.map(c => `<code>${esc(c.label)}</code> → <code>${esc(c.field)}</code>`).join(' · ')}</p>
   ${chkHtml([...P.warnings.map(w => ({ ok: false, label: w })), { ok: !miss.length, label: miss.length ? `No email for ${miss.map(r => r.co).join(', ')} — fill in below (saved straight to the directory)` : 'Every company has an email' }, { level: 'info', label: 'Data source Word', detail: pth.full }])}
   <div class="actions"><button class="btn pri" data-act="edl" data-v="X">⬇ ${esc(pth.xlsx)}</button><button class="btn pri" data-act="edl" data-v="W">⬇ ${esc(pth.docx)}</button><button class="btn" data-act="edl" data-v="Z">⬇ ZIP kedua-dua</button><button class="btn ok" data-act="eoutlook" title="One email per operator straight into Outlook: To = EMAIL, Cc = EMAIL_CC (PIC) + the fixed Cc — Word mail merge cannot Cc">📨 Emails in Outlook (To + Cc PIC)</button>${ts.length > 1 ? '<button class="btn" data-act="edl" data-v="ALL">ZIP all terminals</button>' : ''}</div>
-  <p class="hint"><b>Need Cc (operator PIC)?</b> Use <b>📨 Emails in Outlook</b>: one email per operator, To = EMAIL, Cc = EMAIL_CC + <input class="in" style="min-width:330px" data-act="emcc" value="${esc((typeof emCfg === 'function' ? emCfg().cc : '') || '')}" title="Fixed Cc on every email (finance)">. Fill the PIC in the EMAIL_CC column below (kept in the directory). Word mail merge (below) can only fill To.</p><p class="hint">Save both files in the folder above → open the .docx → <i>Yes</i> on the SQL prompt → Finish &amp; Merge → Send Email Messages (To: EMAIL, Subject already filled, HTML format).</p></section>`;
+  <p class="hint"><b>Need Cc (operator PIC)?</b> Use <b>📨 Emails in Outlook</b>: one email per operator, To = EMAIL, Cc = EMAIL_CC (operator PIC) + everyone here: ${typeof emCcHtml === 'function' ? emCcHtml() : ''} Fill the PIC in the EMAIL_CC column below (kept in the directory). Word mail merge (below) can only fill To.</p><p class="hint">Save both files in the folder above → open the .docx → <i>Yes</i> on the SQL prompt → Finish &amp; Merge → Send Email Messages (To: EMAIL, Subject already filled, HTML format).</p></section>`;
   h += `<section class="card"><h3>Penerima <span class="pill">${R.length}</span></h3><div class="scroll tall"><table class="t dense"><tr><th>Company</th><th>EMAIL</th><th>EMAIL_CC</th>${P.days.map(D => `<th class="r">${esc(dmyStr(D.date))}</th>`).join('')}<th class="r">FINAL_AMOUNT</th></tr>
   ${R.map(r => `<tr class="${r.to ? '' : 'rneg'}"><td><b>${esc(r.co)}</b></td><td><input class="in" style="min-width:230px" data-act="edired" data-t="${P.term}" data-k="${esc(r.key)}" data-co="${esc(r.co)}" data-f="to" value="${esc(r.to)}"></td><td><input class="in" style="min-width:200px" data-act="edired" data-t="${P.term}" data-k="${esc(r.key)}" data-co="${esc(r.co)}" data-f="cc" value="${esc(r.cc)}"></td>${r.per.map(p => `<td class="r">${p.has ? moneyHtml(Math.round(p.fin * 100)) : '<span class="z">–</span>'}</td>`).join('')}<td class="r"><b>${moneyHtml(Math.round(r.total * 100))}</b></td></tr>`).join('')}</table></div></section>`;
   panel().innerHTML = h + eDirHtml() + setH;
@@ -4270,44 +4270,74 @@ document.addEventListener('change', async e => {
 /* ===== ext: emerge.js ===== */
 /* ====================== Daily Settlement email (KT / MS) straight into Outlook, with Cc ======================
    Word mail merge can only fill To — it cannot Cc. These emails are made by the engine instead: one per operator email,
-   To = EMAIL, Cc = EMAIL_CC (the operator's PIC, from the email directory) + the fixed Cc below (finance), same wording and
-   table as MAIL MERGE TERMINAL … .docx, signature from Email · Contacts & signature. They go through the email method you
-   picked on the Email pages (Outlook drafts via the helper / New email / .eml) — nothing is ever sent by the engine. */
+   To = EMAIL, Cc = EMAIL_CC (the operator's PIC, from the email directory) + the Cc list on the page (finance and anyone you add).
+   The look is the same as MAIL MERGE TERMINAL … .docx (eDocXml): teal kicker, navy terminal name, teal rule, navy table head,
+   light-blue Final column, "Best regards, FINANCE OPERATION / NSS IT Solution Sdn Bhd" and the GO HUB banner.
+   They go through the email method picked on the Email pages (Outlook drafts via the helper / New email / .eml). Never sent. */
 const EM_CC0 = 'FINANCE - NSS IT SOLUTION SDN BHD <finance.nssit@gohub.com.my>';
-const emCfg = () => { const c = mlCfg(); c.emerge = c.emerge || { cc: EM_CC0, sig: 'OPS' }; return c.emerge; };
-const emM = v => { const n = Math.round((+v || 0) * 100) / 100; return n === 0 ? '-' : n < 0 ? `(${Math.abs(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : n.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+const emCfg = () => { const c = mlCfg(); c.emerge = c.emerge || { cc: EM_CC0 }; return c.emerge; };
+const emM = v => { const n = Math.round((+v || 0) * 100) / 100; if (Math.abs(n) < 0.005) return '-'; const s = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return n < 0 ? `(${s})` : s; };
+const EM_F = "font-family:Calibri,Aptos,Arial,sans-serif";
 function emBody(P, r) {
-  const name = eName(P), rng = eDateRange(P), cols = P.cols, td = 'border:1px solid #9aa5b1;padding:4px 8px;font-size:9pt', th = td + ';background:#0E9FB8;color:#fff;font-weight:bold;text-align:center';
-  const rows = r.per.map((p, i) => `<tr><td style="${td};text-align:center">${i + 1}</td><td style="${td}">${esc(p.date)}</td><td style="${td}">${esc(p.co)}</td>${p.vals.map(v => `<td style="${td};text-align:right">${emM(v)}</td>`).join('')}<td style="${td};text-align:right">${emM(p.fin)}</td></tr>`).join('');
-  return `<p style="margin:0"><b style="color:#0E9FB8">DAILY SETTLEMENT STATEMENT</b><br><b>${esc(name)}</b><br>Detail Breakdown for Daily Settlement</p>
-<p>Bus Operator : <b>${esc(r.co)}</b><br>Settlement Date : <b>${esc(rng)}</b></p>
-<p>Dear Sir/Madam,</p><p>We are pleased to inform you that this is the Daily Settlement for ${esc(name)} for the date of ${esc(rng)}. Thank you.</p>
-<table style="border-collapse:collapse"><tr><th style="${th}">No.</th><th style="${th}">Date</th><th style="${th}">Company</th>${cols.map(c => `<th style="${th}">${esc(c.label)}</th>`).join('')}</tr>${rows}
-<tr><td colspan="${2 + cols.length}" style="${td};text-align:right;font-weight:bold">FINAL AMOUNT (RM)</td><td style="${td};text-align:right;font-weight:bold">${emM(r.total)}</td></tr></table>
-<p><i>Reminder: Please ensure any outstanding are settled within two (2) weeks from the settlement date.</i></p>
-<p>Kindly feedback or inform any inquiry to this email finance.nssit@gohub.com.my</p><p>Best regards,</p>`;
+  const name = eName(P), rng = eDateRange(P), cols = P.cols, K = cols.length;
+  const bd = 'border:1px solid #9DB3C2', td = `${bd};padding:6px 8px;${EM_F};font-size:10pt;color:#000`, th = `${bd};padding:22px 8px;${EM_F};font-size:9pt;font-weight:bold;color:#fff;background:#0F2B3D;text-align:center;vertical-align:middle`;
+  const fin = 'background:#E9F7FA';
+  const rows = r.per.map((p, i) => `<tr><td style="${td};text-align:center">${i + 1}</td><td style="${td};text-align:center">${esc(p.date)}</td><td style="${td};text-align:center">${esc(p.co)}</td>`
+    + cols.map((c, j) => `<td style="${td};text-align:right${j === K - 1 ? ';' + fin : ''}">${emM(j < K - 1 ? p.vals[j] : p.fin)}</td>`).join('') + '</tr>').join('');
+  const g = 'color:#667884';
+  return `<div style="${EM_F};font-size:11pt;color:#000">
+<p style="margin:0 0 1pt;font-size:9pt;font-weight:bold;color:#0E9FB8">DAILY SETTLEMENT STATEMENT</p>
+<p style="margin:0 0 1pt;font-size:17pt;font-weight:bold;color:#0F2B3D">${esc(name)}</p>
+<p style="margin:0 0 8pt;padding-bottom:6pt;font-size:10.5pt;${g};border-bottom:1.5px solid #0E9FB8">Detail Breakdown for Daily Settlement</p>
+<table style="border-collapse:collapse;margin:9pt 0 10pt;${EM_F};font-size:11pt"><tr><td style="${g};padding:0 10px 2pt 0">Bus Operator</td><td style="${g};padding:0 10px 2pt 0">:</td><td>${esc(r.co)}</td></tr>
+<tr><td style="${g};padding:0 10px 0 0">Settlement Date</td><td style="${g};padding:0 10px 0 0">:</td><td>${esc(rng)}</td></tr></table>
+<p style="margin:0 0 6pt">Dear Sir/Madam,</p>
+<p style="margin:0 0 11pt">We are pleased to inform you that this is the Daily Settlement for <b>${esc(name)}</b> for the date of ${esc(rng)}. Thank you.</p>
+<table style="border-collapse:collapse;width:${150 + 230 + K * 110}px"><tr>${['No.', 'Date', 'Company', ...cols.map(c => c.label)].map((h, j) => `<th style="${th};width:${j === 0 ? 40 : j < 3 ? 115 : 110}px">${esc(h)}</th>`).join('')}</tr>${rows}
+<tr><td colspan="${2 + K}" style="${td};${fin};text-align:right;font-weight:bold;color:#0F2B3D;font-size:11.5pt">FINAL AMOUNT (RM)</td><td style="${td};${fin};text-align:right">${emM(r.total)}</td></tr></table>
+<p style="margin:11pt 0 4pt"><b>Reminder:</b> Please ensure any outstanding are settled within two (2) weeks from the settlement date.</p>
+<p style="margin:0 0 12pt">Kindly feedback or inform any inquiry to this email <a href="mailto:finance.nssit@gohub.com.my" style="color:#0563C1">finance.nssit@gohub.com.my</a></p>
+<p style="margin:0 0 3pt">Best regards,</p>
+<p style="margin:0;font-weight:bold;color:#0F2B3D">FINANCE OPERATION</p>
+<p style="margin:0 0 10pt;font-size:10pt;${g}">NSS IT Solution Sdn Bhd</p></div>`;
 }
+// the banner + disclaimer only (the sign-off is already in the body, so "Best regards" is not doubled)
+function emSigTail(src) { return emSigOrig('OPS', src).replace(/^<p[^>]*>Best regards,<\/p><p[^>]*>.*?<\/p>/, '').replace('width="420" height="101"', 'width="640" height="154"').replace('width:420px;height:101px', 'width:640px;height:154px'); }
+let emSigOrig = null;
 function emEmails(P) {
   const C = emCfg(), name = eName(P), rng = eDateRange(P);
   return eRecords(P).filter(r => r.to).map(r => {
     const key = `EMERGE:${P.term}:${r.key}`; ML.edit[key] = emBody(P, r);
-    const cc = mlRcpt([r.cc, C.cc].filter(Boolean).join('; ').replace(/,/g, ';'));
-    return { id: 'EMERGE', key, title: r.co, to: mlRcpt(String(r.to).replace(/,/g, ';')), cc, subject: `Daily Settlement for ${name} for the date of ${rng}`, text: '', sig: C.sig, att: [] };
+    const cc = mlRcpt([r.cc, C.cc].filter(Boolean).join('; ').replace(/,/g, ';')).filter((x, i, a) => !x.email || a.findIndex(y => (y.email || '').toLowerCase() === x.email.toLowerCase()) === i);
+    return { id: 'EMERGE', key, title: r.co, to: mlRcpt(String(r.to).replace(/,/g, ';')), cc, subject: `Daily Settlement for ${name} for the date of ${rng}`, text: '', sig: 'EMERGE', att: [] };
   });
+}
+// Cc list on the page: names/emails as chips, × to remove, type to add (contacts autocomplete)
+function emCcHtml() {
+  const L = mlRcpt(emCfg().cc || '');
+  return `<span class="emcc">${L.map((r, i) => `<span class="mlc ${r.email ? '' : 'bad'}" title="${esc(r.email || 'No email address — add it in Email · Contacts & signature')}">${esc(r.name || r.email)}${r.name && r.email ? ` <small>&lt;${esc(r.email)}&gt;</small>` : ''}<button class="mlx" data-act="emccx" data-i="${i}" title="Remove">×</button></span>`).join('')}<input class="in mlrcin" list="mlppl-dl" data-act="emccadd" placeholder="+ add Cc (name or email)" title="Type a contact name or an email address, then Enter"></span>${typeof mlPplDl === 'function' ? mlPplDl() : ''}`;
 }
 (function () {
   if (typeof HTMLElement === 'undefined') return;
+  // the signature for these emails = banner + disclaimer only
+  emSigOrig = mlSigHtml;
+  mlSigHtml = function (key, src) { return key === 'EMERGE' ? emSigTail(src) : emSigOrig(key, src); };
   document.addEventListener('click', async e => {
+    const x = e.target.closest('[data-act="emccx"]');
+    if (x) { const L = mlRcpt(emCfg().cc || ''); L.splice(+x.dataset.i, 1); emCfg().cc = mlRcStr(L); await mlSave(); renderE(); return; }
     const b = e.target.closest('[data-act="eoutlook"]'); if (!b) return;
     const P = S.E.sets[S.eTerm]; if (!P) return;
-    const L = emEmails(P), noCc = L.filter(x => !x.cc.some(r => r.email && !/finance\.nssit@/i.test(r.email))).length;
+    const L = emEmails(P), noCc = L.filter(m => !m.cc.some(r => r.email && !/finance\.nssit@/i.test(r.email))).length;
     if (!L.length) { toast('No operator has an email yet — fill EMAIL below', 'bad'); return; }
-    if (!confirm(`${L.length} emails (one per operator) into Outlook with method "${mlModeDef()[1]}".\nTo = EMAIL · Cc = EMAIL_CC (PIC) + ${emCfg().cc || '—'}${noCc ? `\n(${noCc} operators have no PIC in EMAIL_CC)` : ''}\n\nNothing is sent — you press Send in Outlook. Continue?`)) return;
+    if (!confirm(`${L.length} emails (one per operator) into Outlook with method "${mlModeDef()[1]}".\nTo = EMAIL · Cc = EMAIL_CC (PIC) + ${mlRcpt(emCfg().cc || '').map(r => r.name || r.email).join(', ') || '—'}${noCc ? `\n(${noCc} operators have no PIC in EMAIL_CC)` : ''}\n\nNothing is sent — you press Send in Outlook. Continue?`)) return;
     await mlOpen(L);
   });
   document.addEventListener('change', async e => {
-    const t = e.target; if (!t.dataset || t.dataset.act !== 'emcc') return;
-    emCfg().cc = t.value.trim(); await mlSave(); toast('Saved: fixed Cc for the daily settlement emails');
+    const t = e.target; if (!t.dataset || t.dataset.act !== 'emccadd') return;
+    const add = mlRcpt(t.value); if (!add.length) return;
+    const bad = add.filter(r => !r.email); if (bad.length) { toast(`${bad.map(r => r.name).join(', ')}: not in Contacts — type the email address, or add the person in Email · Contacts & signature`, 'bad'); return; }
+    const L = mlRcpt(emCfg().cc || ''); add.forEach(r => { if (!L.some(x => (x.email || '').toLowerCase() === r.email.toLowerCase())) L.push(r); });
+    emCfg().cc = mlRcStr(L); await mlSave(); toast(`${add.map(r => r.name || r.email).join(', ')} added to Cc`); renderE();
   });
 })();
 
@@ -6723,7 +6753,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v63';
+  const VER = 'v64';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6782,7 +6812,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v63';
+const SE_VER = 'v64';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
