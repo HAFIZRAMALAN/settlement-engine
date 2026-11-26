@@ -4708,7 +4708,7 @@ const mlInner = e => ML.edit[e.key] != null ? ML.edit[e.key] : mlHtmlBody(e.text
 const mlBodyHtml = e => `<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body style="${ML_FONT}">${mlInner(e)}${mlSigHtml(e.sig, 'cid:gohubsig@nssit')}</body></html>`;
 function mlEml(e) {
   const c = mlCfg(), B1 = '=_mix_' + Math.random().toString(36).slice(2), B2 = '=_rel_' + Math.random().toString(36).slice(2), L = [];
-  const to = e.to.filter(r => r.email), cc = e.cc.filter(r => r.email), sig = c.sig[e.sig] || {}, ext = MAIL_SIG_IMG.type === 'image/png' ? 'png' : 'jpg';
+  const to = e.to.filter(r => r.email), cc = e.cc.filter(r => r.email), sig = c.sig[e.sig] || (e.sig === 'EMERGE' ? { img: true } : {}), ext = MAIL_SIG_IMG.type === 'image/png' ? 'png' : 'jpg';
   L.push('X-Unsent: 1', `From: ${mlAddr({ name: c.from.name, email: c.from.email })}`);
   if (to.length) L.push('To: ' + to.map(mlAddr).join(', '));
   if (cc.length) L.push('Cc: ' + cc.map(mlAddr).join(', '));
@@ -4735,7 +4735,7 @@ function mlProblems(e) {
 const ML_HELPER = 'http://127.0.0.1:8790';
 async function mlHelperOn() { try { const c = new AbortController(), t = setTimeout(() => c.abort(), 900); const r = await fetch(ML_HELPER + '/ping', { signal: c.signal }); clearTimeout(t); return r.ok && (await r.json()).ok; } catch (e) { return false; } }
 function mlPayload(e, show) {
-  const c = mlCfg(), sig = c.sig[e.sig] || {};
+  const c = mlCfg(), sig = c.sig[e.sig] || (e.sig === 'EMERGE' ? { img: true } : {});
   return { from: c.from.email, to: e.to, cc: e.cc, subject: e.subject, html: mlBodyHtml(e), sig: sig.img ? MAIL_SIG_IMG.b64 : '', sigExt: MAIL_SIG_IMG.type === 'image/png' ? 'png' : 'jpg', att: e.att.map(a => ({ name: a.name, b64: mlB64buf(a.buf) })), show };
 }
 // mailto: opens a New mail in the default mail app (New Outlook) with From = your Outlook account, To, Cc, subject and wording;
@@ -6777,7 +6777,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v66';
+  const VER = 'v67';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6836,7 +6836,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v66';
+const SE_VER = 'v67';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
