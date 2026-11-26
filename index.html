@@ -3686,7 +3686,7 @@ EXT.load.push(async () => { PV.cfg = await DB.get('pvCfg', null); pvCfg(); });
 
 /* ---------------- screen ---------------- */
 const PV_GRPS = [['ALL', 'All vouchers'], ['KT', 'Kuala Terengganu'], ['MS', 'Melaka Sentral'], ['PRO', 'Prolintas'], ['KLIA', 'KLIA TQMS'], ['FERRY', 'Ferry'], ['TBS', 'TBS'], ['SET', 'Codes & numbering']];
-const pvInGrp = (v, g) => g === 'ALL' || v.grp === g || (g === 'PRO' && (v.grp === 'SILK' || v.grp === 'LKSA')) || (g === 'FERRY' && v.key.startsWith('ferry|'));
+const pvInGrp = (v, g) => g === 'ALL' || v.grp === g || (g === 'PRO' && (v.grp === 'SILK' || v.grp === 'LKSA')) || (g === 'FERRY' && /^fer(ry|ml)\|/.test(v.key));
 function pvCard(v) {
   const e = PV.ed[v.key] || {}, money = c => fmtC(c), id = esc(v.key);
   const bad = !v.ok, diff = v.srcBank != null ? v.total - v.manC - v.srcBank : 0;
@@ -3744,7 +3744,7 @@ function pvDocSet(all) {
     return `<tr><td><b>${esc(s)}</b></td><td><input class="in" size="9" data-act="pvds" data-s="${esc(s)}" data-f="code" value="${esc(d.code || s)}"></td>
     <td class="r"><input class="in" type="number" min="1" style="width:70px" data-act="pvds" data-s="${esc(s)}" data-f="start" value="${st != null ? st : ''}" placeholder="${sug ? 'e.g. ' + sug : 'start'}"></td>
     <td><input class="in" size="5" maxlength="4" data-act="pvds" data-s="${esc(s)}" data-f="yymm" value="${esc(d.yymm || '')}" placeholder="${esc(yy || 'YYMM')}" title="YY + MM, e.g. 2611 = Nov 2026. Empty = latest month of this series' payment dates"></td>
-    <td><input class="in" size="11" data-act="pvds" data-s="${esc(s)}" data-f="date" value="${esc(d.date || '')}" placeholder="${vs[0] ? esc(dmyStr(pvNext(vs[0].to))) : 'dd/mm/yyyy'}" title="Payment date for every voucher of this series (empty = day after the settlement)"></td>
+    <td><input class="in" size="11" data-act="pvds" data-s="${esc(s)}" data-f="date" value="${esc(d.date || '')}" placeholder="${vs[0] ? esc(dmyStr(vs[0].date || pvNext(vs[0].to))) : 'dd/mm/yyyy'}" title="Payment date for every voucher of this series (empty = day after the settlement)"></td>
     <td>${vs.length}</td><td>${docs.length ? esc(docs[0]) + (docs.length > 1 ? ' → ' + esc(docs[docs.length - 1]) : '') : '<span class="neg">type the start no.</span>'}${last ? `<br><small class="muted">last in AutoCount file: ${esc(last.doc)}</small>` : ''}</td></tr>`; }).join('')}</table>`;
 }
 EXT.render.V = function renderV() {
@@ -6526,7 +6526,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v60';
+  const VER = 'v61';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6585,7 +6585,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v60';
+const SE_VER = 'v61';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
