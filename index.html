@@ -3591,6 +3591,7 @@ function pvList() {
   Object.entries(PV.pro).forEach(([hw, days]) => { const l = Object.values(days); if (l.length) out.push(pvProVoucher(hw, l)); });
   Object.values(PV.klia).forEach(k => out.push(pvKliaVoucher(k)));
   Object.values(PV.fer || {}).forEach(x => out.push(pvFerryMLVoucher(x)));
+  try { if (typeof pvKtmVouchers === 'function') pvKtmVouchers().forEach(v => out.push(v)); } catch (e) { console.error(e); }
   try { pvFerryVouchers().forEach(v => { if (!out.some(o => o.grp === v.grp && dmyStr(o.from) === dmyStr(v.from) && dmyStr(o.to) === dmyStr(v.to))) out.push({ ...v, eng: true }); }); } catch (e) { }
   try { pvTbsVouchers().forEach(v => out.push({ ...v, eng: true })); } catch (e) { }
   // edits, manual lines, dates, running numbers
@@ -3668,6 +3669,7 @@ function pvTsv(list, series, head) {
 async function pvIngest(file) {
   const chip = { name: file.name, kind: '?', note: '', ok: false, module: 'V' };
   const buf = await file.arrayBuffer(), u = new Uint8Array(buf.slice(0, 2));
+  if (u[0] === 0x25 && u[1] === 0x50) return typeof pvKtmPdf === 'function' ? pvKtmPdf(file, buf) : null;   // %PDF
   if (!(u[0] === 0x50 && u[1] === 0x4b)) return null;
   const wb = await loadXlsx(buf), names = wb.worksheets.map(w => w.name);
   if (names.some(n => /^(MSM2TPV|M1TPV|M3TPV\s*)$/.test(n))) { PV.last = pvReadCashbook(wb); PV.cbFile = file.name; Object.assign(chip, { ok: true, kind: 'Import CashBook (last numbers)', note: Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV)/.test(o.doc)).map(o => o.doc).join(' · ') }); return chip; }
@@ -3754,7 +3756,7 @@ EXT.render.V = function renderV() {
   if (sel === 'SET') { panel().innerHTML = h + pvCodes(); return; }
   h += `<section class="card"><h3>Doc No &amp; payment date</h3><p class="hint">Doc No = <b>code</b> + <b>running no.</b> + / + <b>YY</b><b>MM</b> (e.g. <code>M1TPV01/2611</code>). Choose for each series the code, the first number, the month/year and the payment date — every voucher of that series follows (01, 02, 03…). You can still change one voucher's No / Date on its card. ${PV.cbFile ? `Last in <b>${esc(PV.cbFile)}</b>: ${Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV)/.test(o.doc)).map(o => esc(o.doc)).join(' · ')}` : 'Drop your Import CashBook file here to see the last numbers used.'}</p>
   ${pvDocSet(all)}
-  <div class="actions"><button class="btn pri" data-act="pvdl">⬇ Import CashBook (.xlsx)</button>${[...new Set(all.filter(v => !v.off).map(v => v.series))].map(s => `<button class="btn" data-act="pvcopy" data-v="${esc(s)}" data-h="1" title="DocNo header row + vouchers, columns A to AQ">Copy ${esc(s)} for AutoCount</button>`).join('')}<span class="sp"></span><button class="btn sm" data-act="pvclr">Clear files</button></div>
+  <div class="actions"><button class="btn pri" data-act="pvdl">⬇ Import CashBook (.xlsx)</button>${all.some(v => v.grp === 'KTM' && !v.off) ? '<button class="btn ok" data-act="ktmrc" title="Maybank RCgen bulk payment file for the KTM vouchers: ETS · INTERCITY · OTHERS · KOMUTER per day, to Tenang Capital">⬇ RCgen KTM (.txt)</button>' : ''}${[...new Set(all.filter(v => !v.off).map(v => v.series))].map(s => `<button class="btn" data-act="pvcopy" data-v="${esc(s)}" data-h="1" title="DocNo header row + vouchers, columns A to AQ">Copy ${esc(s)} for AutoCount</button>`).join('')}<span class="sp"></span><button class="btn sm" data-act="pvclr">Clear files</button></div>
   <p class="hint"><b>AutoCount → Import Cash Book → Paste from Clipboard:</b> click <b>Copy … for AutoCount</b> here, then <b>Paste from Clipboard</b> — no Excel needed. From the Excel file instead: select from cell <b>A3</b> (DocNo header row, starting at column <b>A</b>) to column <b>AQ</b> of the last row. Starting at column B shifts every field and AutoCount says <i>Not valid Doc No for import found</i>. Import one series (MSM2TPV / M1TPV / M3TPV) at a time.</p></section>`;
   if (!list.length) { panel().innerHTML = h + empty('Drop the finished settlement files here', 'DAILY SETTLEMENT KT / MS · SETTLEMENT PROLINTAS SILK / LKSA · OPERATOR SETTLEMENT REPORT (…) complete (KLIA). Ferry and TBS vouchers appear by themselves once their reports are loaded in the engine.'); return; }
   const tot = list.filter(v => !v.off).reduce((a, v) => a + v.total, 0), bad = list.filter(v => !v.off && !v.ok).length, noNo = list.filter(v => !v.off && !v.doc).length;
@@ -3774,9 +3776,9 @@ if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
   document.head.appendChild(st);
   // while Import Cashbook is open, dropped files are read for vouchers first; anything else goes to the normal reader
   const _ingest = ingest;
-  ingest = async function (file) { if (S.tab === 'V') { try { const c = await pvIngest(file); if (c) return c; } catch (e) { console.error(e); } } return _ingest(file); };
+  ingest = async function (file) { if (S.tab === 'V' || PV.pin) { try { const c = await pvIngest(file); if (c) return c; } catch (e) { console.error(e); } } return _ingest(file); };
   const _hf = handleFiles;
-  handleFiles = async function (list) { const was = S.tab; await _hf(list); if (was === 'V' && S.tab !== 'V') { S.tab = 'V'; renderAll(); } };
+  handleFiles = async function (list) { const was = S.tab; PV.pin = was === 'V'; try { await _hf(list); } finally { PV.pin = false; } if (was === 'V' && S.tab !== 'V') { S.tab = 'V'; renderAll(); } };
   const ed = k => PV.ed[k] = PV.ed[k] || {};
   document.addEventListener('click', async e => {
     const b = e.target.closest('[data-act]'); if (!b) return; const a = b.dataset.act, k = b.dataset.k;
@@ -3791,7 +3793,7 @@ if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
     else if (a === 'pvlback') { delete (ed(k).del || {})[b.dataset.oi]; renderAll(); }
     else if (a === 'pvlcopy') { const v = pvList().find(x => x.key === k), l = v && v.lines.find(x => b.dataset.xi != null ? x.xi === +b.dataset.xi : x.oi === +b.dataset.oi); if (!l) return; (ed(k).extra = ed(k).extra || []).push({ acc: l.acc, accD: l.accD, desc: l.desc, amtC: l.amtC, ...(l.proj != null ? { proj: l.proj } : {}) }); toast('Line copied — change it at the bottom of the voucher'); renderAll(); }
     else if (a === 'pvlreset') { if (!confirm('Undo every change you made on this voucher (lines, payee, description, payment method)?')) return; ['lines', 'del', 'extra', 'payee', 'desc', 'pm'].forEach(x => delete ed(k)[x]); renderAll(); }
-    else if (a === 'pvclr') { PV.bus = {}; PV.pro = {}; PV.klia = {}; PV.fer = {}; PV.ed = {}; S.files = (S.files || []).filter(f => f.module !== 'V'); renderAll(); }
+    else if (a === 'pvclr') { PV.bus = {}; PV.pro = {}; PV.klia = {}; PV.fer = {}; PV.ktm = {}; PV.ed = {}; S.files = (S.files || []).filter(f => f.module !== 'V'); renderAll(); }
     else if (a === 'pvdl') { const l = pvList().filter(v => !v.off), miss = l.filter(v => !v.doc).length, bad = l.filter(v => !v.ok).length; if (miss) { toast(`${miss} voucher(s) have no voucher no. — type the start number`, 'bad'); return; } const noAcc = l.filter(v => v.lines.some(x => !x.acc) || !v.payee).map(v => v.P.label); if (noAcc.length) { toast(`Account code / payee missing for: ${[...new Set(noAcc)].join(', ')} — fill them in Cash Book codes (or untick those vouchers)`, 'bad'); return; } if (bad && !confirm(`${bad} voucher(s) do not match their settlement total. Download anyway?`)) return; await busy('Building Import CashBook…', async () => saveBlob(`IMPORT CASHBOOK PV ${typeof cuToday === 'function' ? cuToday() : pvYYMM(l[0].date)}.xlsx`, await pvXlsx(l))); }
     else if (a === 'pvcopy') { const t = pvTsv(pvList(), b.dataset.v, !!b.dataset.h); try { await navigator.clipboard.writeText(t); toast(`${b.dataset.v}: header + ${t.split('\n').length - 1} rows copied (columns A–AQ) — in AutoCount click Paste from Clipboard`); } catch (er) { toast('Clipboard blocked by the browser', 'bad'); } }
   });
@@ -4243,6 +4245,137 @@ document.addEventListener('change', async e => {
     await cuSave(); toast(`Template "${f.name}" loaded — the data now fills it. Map each column to your raw header below.`); t.value = ''; renderAll();
   }
 });
+
+
+/* ===== ext: ktm.js ===== */
+/* ====================== KTM (TENANG CAPITAL) — RevenueSharingReportPdf ETS / KOMUTER → MPV voucher + RCgen ======================
+   Your vouchers (KTM NOV PV.pdf, MPV01–05/2611): Pay To TENANG CAPITAL BERHAD, IBG, one line per day per product
+   325-K001 KTM STATION [TCT APP]  "SALES [03/11/2026] - ETS / INTERCITY / OTHERS / KOMUTER"; previous-month days on 325-TM02.
+   Amounts = the "Total:" row of the revenue sharing report (ETS PDF last page: ETS · Intercity · Others, after ePayment charges
+   and insurance; KOMUTER PDF: Total Payable − charges). 25/11/2026: 1,367,203.84 · 88,777.43 · 216,323.19 · 113,454.17 = your RCGEN. */
+const KTM_RC = {"head": "00|MYNSSITSOL|KTM TICKETING||B||||||||||||||||||||||||", "l1": "01|IT|Domestic Payments (MY)||17112023|||KTM-231115 KOMUTER UTARA|||MYR|93.19|Y|MYR|562666060244|514012000678|||Y|KERETAPI TANAH MELAYU BHD - KOMUTER|||||||225943T||||||||||MBBEMYKL|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||01|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||", "l2": "02|PA|KTM-231115 KOMUTER UTARA|shahrulsyazrin@ktmb.com.my|||KTM-231115 KOMUTER UTARA|||||||93.19|||||||finance@nssit.com.my|hazamy@ktmb.com.my||||||||||||||||||", "trailN": 30};
+const KTM_BEN = { acc: '550516140432', id: '280515D', bank: 'MBBEMYKL', mail: 'afwani@tenangcapital.com', cc: 'suraini@tenangcapital.com', from: 'finance@nssit.com.my', debit: '562666060244',
+  name: { ETS: 'TENANG CAPITAL BERHAD - ETS', INTERCITY: 'TENANG CAPITAL BERHAD - INTERCITY', OTHERS: 'TENANG CAPITAL BERHAD - ETS', KOMUTER: 'TENANG CAPITAL BERHAD - KOMUTER' } };
+const KTM_PRODS = ['ETS', 'INTERCITY', 'OTHERS', 'KOMUTER'];
+PV_DEF.KTM = { label: 'KTM (Tenang Capital)', series: 'MPV', payee: 'TENANG CAPITAL BERHAD', proj: '', acc: '325-K001', contra: '', temp: '325-TM02', pm: '', by: 'IBG', bc: 0, float: 2, accD: 'KTM STATION [TCT APP]', tempD: 'TEMPORARY CONTROL ACCOUNT [KTM]' };
+if (!PV_ORDER.includes('KTM')) PV_ORDER.push('KTM');
+if (!PV_GRPS.some(g => g[0] === 'KTM')) PV_GRPS.splice(PV_GRPS.findIndex(g => g[0] === 'SET'), 0, ['KTM', 'KTM']);
+PV.ktm = PV.ktm || {};
+
+// ---- tiny PDF text reader (Reporting Services PDFs: WinAnsi Type1 fonts, "x y Td (text) Tj") ----
+// whatever inflated before an error / trailing junk is kept; never waits more than 3 s on one stream
+async function ktmInflate(u8) {
+  const ds = new DecompressionStream('deflate'), w = ds.writable.getWriter(), r = ds.readable.getReader(), out = [];
+  w.write(u8).then(() => w.close()).catch(() => { });
+  const read = (async () => { for (; ;) { let x; try { x = await r.read(); } catch (e) { break; } if (x.done) break; out.push(x.value); } })();
+  await Promise.race([read, new Promise(res => setTimeout(res, 3000))]);
+  let n = 0; out.forEach(a => { n += a.length; }); const z = new Uint8Array(n); let o = 0; out.forEach(a => { z.set(a, o); o += a.length; }); return z;
+}
+const ktmLatin = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return s; };
+function ktmPdfStr(s) {   // PDF literal string body → text
+  return s.replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (m, c) => /^[0-7]/.test(c) ? String.fromCharCode(parseInt(c, 8)) : ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' })[c] || c);
+}
+async function ktmPdfItems(buf) {
+  const u8 = new Uint8Array(buf), raw = ktmLatin(u8), pages = [], re = /stream\r?\n/g;
+  let m;
+  while ((m = re.exec(raw))) {
+    if (raw.slice(Math.max(0, m.index - 3), m.index) === 'end') continue;   // "endstream" also contains "stream"
+    const s = m.index + m[0].length, e = raw.indexOf('endstream', s); if (e < 0) break;
+    let e2 = e; while (e2 > s && (raw[e2 - 1] === '\n' || raw[e2 - 1] === '\r')) e2--;
+    const dict = raw.slice(Math.max(0, raw.lastIndexOf('<<', m.index)), m.index);
+    let txt = null;
+    if (/\/Subtype\s*\/Image|DCTDecode/.test(dict)) { re.lastIndex = e; continue; }
+    try { txt = /FlateDecode/.test(dict) ? ktmLatin(await ktmInflate(u8.subarray(s, e2))) : raw.slice(s, e2); } catch (er) { txt = null; }
+    re.lastIndex = e;
+    if (!txt || !/\bTj\b/.test(txt)) continue;
+    const items = [], tr = /BT([\s\S]*?)ET/g; let b;
+    while ((b = tr.exec(txt))) {
+      let x = 0, y = 0; const tok = /(-?[\d.]+)\s+(-?[\d.]+)\s+Td|\(((?:\\.|[^\\)])*)\)\s*Tj/g; let k;
+      while ((k = tok.exec(b[1]))) { if (k[1] != null) { x = +k[1]; y = +k[2]; } else items.push({ x, y, t: ktmPdfStr(k[3]).trim() }); }
+    }
+    pages.push(items.filter(i => i.t));
+  }
+  return pages;
+}
+const ktmNum = t => { t = String(t).trim(); if (!/^\(?-?[\d,]+\.\d\d\)?$/.test(t)) return null; return (/^[(-]/.test(t) ? -1 : 1) * Math.round(parseFloat(t.replace(/[(),-]/g, '')) * 100); };
+// ETS report → { ETS, INTERCITY, OTHERS } · KOMUTER report → { KOMUTER }   (cents)
+async function ktmReadRS(buf, fileName) {
+  const pages = await ktmPdfItems(buf); if (!pages.length) return null;
+  const title = pages.flat().map(i => i.t).join(' ');
+  if (!/Revenue Sharing Report/i.test(title)) return null;
+  const dm = /Date\s*:\s*(\d{1,2}\/\d{1,2}\/\d{4})/.exec(title), date = dm ? anyDate(dm[1]) : null; if (!date) return null;
+  const kom = /Revenue Sharing Report \(Komuter\)/i.test(title);
+  // the summary table: page holding "Total Payable Amount"; the result is the lowest "Total:" row under it
+  const pg = pages.find(p => p.some(i => /^Total Payable Amount/i.test(i.t))); if (!pg) return null;
+  const top = pg.find(i => /^Total Payable Amount/i.test(i.t)).y, tots = pg.filter(i => /^Total\s*:?$/i.test(i.t) && i.y < top + 1);
+  if (!tots.length) return null;
+  const tl = tots.sort((a, b) => a.y - b.y)[0];   // PDF y grows upwards → lowest = smallest y
+  const nums = pg.filter(i => ktmNum(i.t) != null && Math.abs(i.y - tl.y) < 9 && i.x > tl.x);
+  if (kom) { const n = nums.sort((a, b) => Math.abs(a.y - tl.y) - Math.abs(b.y - tl.y))[0]; return n ? { kind: 'KOMUTER', date, file: fileName, KOMUTER: ktmNum(n.t) } : null; }
+  // the "Total:" row holds 4 amounts left to right: ETS · Intercity · Others · TOTAL (the ETS header is not stored as text)
+  const row = nums.filter(n => Math.abs(n.y - tl.y) < 2).sort((a, b) => a.x - b.x).map(n => ktmNum(n.t));
+  if (row.length < 3) return null;
+  const r = { kind: 'ETS', date, file: fileName, ETS: row[0], INTERCITY: row[1], OTHERS: row[2] };
+  if (row.length > 3 && row[3] !== r.ETS + r.INTERCITY + r.OTHERS) r.warn = `ETS + Intercity + Others ${fmtC(r.ETS + r.INTERCITY + r.OTHERS)} differs from the report total ${fmtC(row[3])}`;
+  return r;
+}
+async function pvKtmPdf(file, buf) {
+  if (!/REVENUE\s*SHARING/i.test(file.name.replace(/[_-]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'))) return null;
+  const chip = { name: file.name, kind: 'KTM revenue sharing', note: '', ok: false, module: 'V' };
+  let r = null; try { r = await ktmReadRS(buf, file.name); } catch (e) { console.error(e); }
+  if (!r) { chip.note = 'Summary "Total:" row not found in the PDF'; return chip; }
+  const k = dKey(r.date), D = PV.ktm[k] = PV.ktm[k] || { date: r.date, files: [] };
+  if (r.kind === 'ETS') Object.assign(D, { ETS: r.ETS, INTERCITY: r.INTERCITY, OTHERS: r.OTHERS, warn: r.warn }); else D.KOMUTER = r.KOMUTER;
+  if (!D.files.includes(file.name)) D.files.push(file.name);
+  Object.assign(chip, { ok: true, kind: `PV · KTM ${r.kind === 'ETS' ? 'ETS / Intercity / Others' : 'Komuter'}`, date: dmyStr(r.date), note: r.kind === 'ETS' ? `ETS ${fmtC(r.ETS)} · Intercity ${fmtC(r.INTERCITY)} · Others ${fmtC(r.OTHERS)}` : `Komuter ${fmtC(r.KOMUTER)}` });
+  return chip;
+}
+// one MPV per run of consecutive days (a weekend is paid together, like MPV01/2611 = 30/10 - 01/11)
+function pvKtmVouchers() {
+  const P = pvP('KTM'), ds = Object.values(PV.ktm || {}).sort((a, b) => dKey(a.date) - dKey(b.date)), runs = [];
+  ds.forEach(d => { const L = runs[runs.length - 1]; if (L && dKey(pvNext(L[L.length - 1].date)) === dKey(d.date)) L.push(d); else runs.push([d]); });
+  return runs.map(days => {
+    const from = days[0].date, to = days[days.length - 1].date, lines = [], warn = [];
+    days.forEach(d => {
+      const prev = pvMk(d.date) < pvMk(to), acc = prev ? P.temp : P.acc, accD = prev ? P.tempD : P.accD;
+      KTM_PRODS.forEach(p => { if (d[p] != null) lines.push(pvL(acc, `SALES [${dmyStr(d.date)}] - ${p}`, d[p], accD)); });
+      if (d.ETS == null) warn.push(`${dmyStr(d.date)}: RevenueSharingReportPdf ETS not loaded`);
+      if (d.KOMUTER == null) warn.push(`${dmyStr(d.date)}: RevenueSharingReportPdf KOMUTER not loaded`);
+      if (d.warn) warn.push(`${dmyStr(d.date)}: ${d.warn}`);
+    });
+    if (!P.pm) warn.push('Payment method (AutoCount code) for KTM is not set yet — fill it once in Codes & numbering');
+    const tot = lines.reduce((a, l) => a + l.amtC, 0);
+    return { key: `ktm|${dmyStr(from)}|${dmyStr(to)}`, grp: 'KTM', series: P.series, payee: P.payee, desc: `SALES [${rangeText(from, to)}]`, from, to, lines, P, srcBank: tot, srcLbl: 'Revenue sharing reports', file: days.flatMap(d => d.files).join(' + '), warn, ktmDays: days };
+  });
+}
+/* RCgen (Maybank bulk payment .txt — same layout and hash as your KTM RCgen file): per day ETS · INTERCITY · OTHERS · KOMUTER,
+   value date = the voucher's payment date, reference KTMTENG-<yymmdd of the sales day> <product> */
+function ktmRcgen(vs) {
+  const T = KTM_RC, recs = [];
+  vs.forEach(v => (v.ktmDays || []).forEach(d => KTM_PRODS.forEach(p => { if (d[p] > 0) recs.push({ p, amt: d[p], day: d.date, pay: v.date }); })));
+  const lines = [T.head], dd = o => `${String(o.d).padStart(2, '0')}${String(o.m).padStart(2, '0')}${o.y}`, ymd = o => `${String(o.y).slice(2)}${String(o.m).padStart(2, '0')}${String(o.d).padStart(2, '0')}`;
+  let hash = 0, tot = 0;
+  recs.forEach((x, i) => {
+    const n = i + 1, a = T.l1.split('|'), b = T.l2.split('|'), ref = `KTMTENG-${ymd(x.day)} ${x.p}`, amt = (x.amt / 100).toFixed(2);
+    a[4] = dd(x.pay); a[7] = ref; a[11] = amt; a[14] = KTM_BEN.debit; a[15] = KTM_BEN.acc; a[19] = KTM_BEN.name[x.p]; a[26] = KTM_BEN.id; a[36] = KTM_BEN.bank;
+    b[2] = ref; b[3] = KTM_BEN.mail; b[6] = ref; b[13] = amt; b[20] = KTM_BEN.from; b[21] = KTM_BEN.cc;
+    lines.push(a.join('|'), b.join('|'));
+    hash += (x.amt % 2000) + n + ([...KTM_BEN.acc.slice(-6)].reduce((s, c) => s + (+c || 0), 0) * 2 + n); tot += x.amt;
+  });
+  const tr = new Array(T.trailN).fill(''); tr[0] = '99'; tr[1] = String(recs.length); tr[2] = (tot / 100).toFixed(2); tr[3] = String(hash);
+  lines.push(tr.join('|'));
+  return { text: lines.join('\r\n') + '\r\n', recs, hash, tot };
+}
+(function () {
+  if (typeof HTMLElement === 'undefined') return;
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-act="ktmrc"]'); if (!b) return;
+    const vs = pvList().filter(v => v.grp === 'KTM' && !v.off); if (!vs.length) { toast('No KTM voucher yet — drop the RevenueSharingReportPdf ETS / KOMUTER files', 'bad'); return; }
+    const R = ktmRcgen(vs), f = vs[0].from, t = vs[vs.length - 1].to, tag = o => `${String(o.d).padStart(2, '0')}${String(o.m).padStart(2, '0')}${o.y}`;
+    saveBlob(`RCgen_KTM_${tag(f)}${dKey(f) !== dKey(t) ? '-' + tag(t) : ''}.txt`, new Blob([R.text], { type: 'text/plain' }));
+    toast(`RCgen KTM: ${R.recs.length} payments · RM ${(R.tot / 100).toFixed(2)}`);
+  });
+})();
 
 
 /* ===== ext: mail.js ===== */
@@ -4713,7 +4846,7 @@ let ML_HF = null;
     const arr = [...list];
     if (S.tab === 'Q' && ML_PAGES[ML.page]) { await mlAddFiles(arr); return; }
     // KLIA operator reports / integration / debit advice: on Import Cashbook they make the PV, everywhere else they are email attachments
-    const isMail = f => { const r = mlRoute(f.name) || {}; if (/^Reports\b.*\.zip$/i.test(f.name)) return true; if (r.id === 'KLIA' || (r.kind === 'skip' && /OPERATOR SETTLEMENT/i.test(f.name))) return S.tab !== 'V'; return /\.pdf$/i.test(f.name) && !!r.id; };
+    const isMail = f => { if (S.tab === 'V') return false; const r = mlRoute(f.name) || {}; if (/^Reports\b.*\.zip$/i.test(f.name)) return true; if (r.id === 'KLIA' || (r.kind === 'skip' && /OPERATOR SETTLEMENT/i.test(f.name))) return S.tab !== 'V'; return /\.pdf$/i.test(f.name) && !!r.id; };
     const isRaw = async f => { if (!/\.xlsx$/i.test(f.name) || typeof ExcelJS === 'undefined') return false; try { const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await f.arrayBuffer()); let raw = false; const ws = wb.worksheets[0]; if (ws) ws.eachRow((row, r) => { if (r <= 15) row.eachCell(c => { if (/^\s*Company\s*:/i.test(mlCellTxt(c))) raw = true; }); }); return raw; } catch (e) { return false; } };
     const mail = []; for (const f of arr) if (isMail(f) && !(await isRaw(f))) mail.push(f);
     // a KLIA .xlsx (raw ALM integration, operator settlement report) is BOTH the settlement raw file and an email
@@ -6526,7 +6659,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v61';
+  const VER = 'v62';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6585,7 +6718,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v61';
+const SE_VER = 'v62';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
@@ -6699,7 +6832,7 @@ document.addEventListener('change', async e => {
       { k: 'V', pv: 'ALL', name: 'All payment vouchers', sub: 'AutoCount Import CashBook · every project' },
       { k: 'V', pv: 'KT', name: 'Kuala Terengganu', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'MS', name: 'Melaka Sentral', sub: 'PV · MSM2TPV', s: 1 },
       { k: 'V', pv: 'PRO', name: 'Prolintas (SILK · LKSA)', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'KLIA', name: 'KLIA TQMS', sub: 'PV · M3TPV', s: 1 },
-      { k: 'V', pv: 'FERRY', name: 'Ferry', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'TBS', name: 'TBS', sub: 'PV · M1TPV', s: 1 }] : []],
+      { k: 'V', pv: 'FERRY', name: 'Ferry', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'TBS', name: 'TBS', sub: 'PV · M1TPV', s: 1 }, { k: 'V', pv: 'KTM', name: 'KTM', sub: 'PV · MPV · RCgen', s: 1 }] : []],
     ['mail', 'Email', [
       ...(has('E') ? [{ k: 'E', et: 'KT', name: 'Kuala Terengganu', sub: 'Daily settlement to operators' }, { k: 'E', et: 'MS', name: 'Melaka Sentral', sub: 'Daily settlement to operators' }] : []),
       { k: 'Q', mail: 'OPPAY', name: 'Operator Payment KT', sub: 'Operator Payment Report' }, { k: 'Q', mail: 'OPPAYMS', name: 'Operator Payment MS', sub: 'Operator Payment Report' }, { k: 'Q', mail: 'PRO', name: 'Prolintas', sub: 'LKSA · SILK settlement' },
