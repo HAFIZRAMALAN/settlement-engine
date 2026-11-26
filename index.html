@@ -2877,8 +2877,8 @@ function renderE() {
   <div class="stats">${stat('Date', esc(eDateRange(P)))}${stat('FINAL AMOUNT (all)', fmtC(Math.round(R.reduce((a, r) => a + r.total, 0) * 100)), 'hl')}${stat('No email', miss.length, miss.length ? 'bad' : '')}</div>
   <p class="hint">Columns (Excel header → Word field): ${P.cols.map(c => `<code>${esc(c.label)}</code> → <code>${esc(c.field)}</code>`).join(' · ')}</p>
   ${chkHtml([...P.warnings.map(w => ({ ok: false, label: w })), { ok: !miss.length, label: miss.length ? `No email for ${miss.map(r => r.co).join(', ')} — fill in below (saved straight to the directory)` : 'Every company has an email' }, { level: 'info', label: 'Data source Word', detail: pth.full }])}
-  <div class="actions"><button class="btn pri" data-act="edl" data-v="X">⬇ ${esc(pth.xlsx)}</button><button class="btn pri" data-act="edl" data-v="W">⬇ ${esc(pth.docx)}</button><button class="btn" data-act="edl" data-v="Z">⬇ ZIP kedua-dua</button>${ts.length > 1 ? '<button class="btn" data-act="edl" data-v="ALL">ZIP all terminals</button>' : ''}</div>
-  <p class="hint">Save both files in the folder above → open the .docx → <i>Yes</i> on the SQL prompt → Finish &amp; Merge → Send Email Messages (To: EMAIL, Subject already filled, HTML format).</p></section>`;
+  <div class="actions"><button class="btn pri" data-act="edl" data-v="X">⬇ ${esc(pth.xlsx)}</button><button class="btn pri" data-act="edl" data-v="W">⬇ ${esc(pth.docx)}</button><button class="btn" data-act="edl" data-v="Z">⬇ ZIP kedua-dua</button><button class="btn ok" data-act="eoutlook" title="One email per operator straight into Outlook: To = EMAIL, Cc = EMAIL_CC (PIC) + the fixed Cc — Word mail merge cannot Cc">📨 Emails in Outlook (To + Cc PIC)</button>${ts.length > 1 ? '<button class="btn" data-act="edl" data-v="ALL">ZIP all terminals</button>' : ''}</div>
+  <p class="hint"><b>Need Cc (operator PIC)?</b> Use <b>📨 Emails in Outlook</b>: one email per operator, To = EMAIL, Cc = EMAIL_CC + <input class="in" style="min-width:330px" data-act="emcc" value="${esc((typeof emCfg === 'function' ? emCfg().cc : '') || '')}" title="Fixed Cc on every email (finance)">. Fill the PIC in the EMAIL_CC column below (kept in the directory). Word mail merge (below) can only fill To.</p><p class="hint">Save both files in the folder above → open the .docx → <i>Yes</i> on the SQL prompt → Finish &amp; Merge → Send Email Messages (To: EMAIL, Subject already filled, HTML format).</p></section>`;
   h += `<section class="card"><h3>Penerima <span class="pill">${R.length}</span></h3><div class="scroll tall"><table class="t dense"><tr><th>Company</th><th>EMAIL</th><th>EMAIL_CC</th>${P.days.map(D => `<th class="r">${esc(dmyStr(D.date))}</th>`).join('')}<th class="r">FINAL_AMOUNT</th></tr>
   ${R.map(r => `<tr class="${r.to ? '' : 'rneg'}"><td><b>${esc(r.co)}</b></td><td><input class="in" style="min-width:230px" data-act="edired" data-t="${P.term}" data-k="${esc(r.key)}" data-co="${esc(r.co)}" data-f="to" value="${esc(r.to)}"></td><td><input class="in" style="min-width:200px" data-act="edired" data-t="${P.term}" data-k="${esc(r.key)}" data-co="${esc(r.co)}" data-f="cc" value="${esc(r.cc)}"></td>${r.per.map(p => `<td class="r">${p.has ? moneyHtml(Math.round(p.fin * 100)) : '<span class="z">–</span>'}</td>`).join('')}<td class="r"><b>${moneyHtml(Math.round(r.total * 100))}</b></td></tr>`).join('')}</table></div></section>`;
   panel().innerHTML = h + eDirHtml() + setH;
@@ -3298,13 +3298,13 @@ const PV_DEF = {
   // Ferry: from your vouchers M1TPV57/2611 (Mersing, SALES [16/11/2026], dated 18/11) and M1TPV19/2610 (Tanjung Gemok) — paid T+2
   MERSING: { label: 'Ferry Mersing', series: 'M1TPV', payee: 'BISTARI GEMILANG TRAVEL SDN BHD (MERSING)', proj: 'MERSING', acc: '325-ME01', contra: '326-ME01', temp: '325-TM14', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, lag: 2, accD: 'MERSING', contraD: 'CONTRA ACCOUNT [MERSING]', tempD: 'TEMPORARY CONTROL ACCOUNT [MERSING]' },
   'TANJUNG GEMOK': { label: 'Ferry Tanjung Gemok', series: 'M1TPV', payee: 'BISTARI GEMILANG SHIPPING SDN BHD (TANJUNG GEMOK)', proj: 'MERSING', acc: '325-ME02', contra: '326-ME01', temp: '325-TM14', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, lag: 2, accD: 'TANJUNG GEMOK', contraD: 'CONTRA ACCOUNT [MERSING]', tempD: 'TEMPORARY CONTROL ACCOUNT [MERSING]' },
-  TBS: { label: 'TBS (Maju TMAS)', series: 'M1TPV', payee: 'MAJU TMAS SDN BHD', proj: 'TBS', acc: '325-TB01', contra: '326-TB01', temp: '325-TM09', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'TBS', contraD: 'CONTRA ACCOUNT [TBS]', tempD: 'TEMPORARY CONTROL ACCOUNT [TBS]' }
+  TBS: { label: 'TBS (Maju TMAS)', series: 'M1TPV', payee: 'MAJU TMAS SDN BHD', proj: 'TBS', acc: '325-TB01', contra: '326-TB01', temp: '325-TM09', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, lag: 2, accD: 'TBS', contraD: 'CONTRA ACCOUNT [TBS]', tempD: 'TEMPORARY CONTROL ACCOUNT [TBS]' }
 };
 // KLIA operator code in the report → AutoCount payee (M3TPV history)
 const PV_KOPS = { ALM: 'ALM RESOURCES SDN BHD', EFXTRANSPORT: 'EFX TRAVEL & TOURS SDN BHD', GAPTEK: 'GAPTEK TRAVEL & TOUR SDN BHD', GEMBIRACESB: 'CITY EXECUTIVE TAXICABS SDN BHD', GEMBIRASAING: 'SAING ENTERPRISE SDN BHD', KLASSSERVIS: 'KLASS SERVIS (M) SDN BHD', PUJANGGA: 'PUJANGGA MOTOR SDN BHD', SUNLIGHT: 'SUNLIGHT TAXI SDN BHD', YEWNITED: 'YEWNITED PARTNERS SDN BHD' };
 const PV_ORDER = ['MS', 'LKSA', 'SILK', 'KT', 'MERSING', 'TANJUNG GEMOK', 'TBS', 'KLIA'];   // M1TPV64-68/2611: LKSA, SILK, KT, MERSING, TBS
 const PV_MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const PV = { bus: {}, pro: {}, klia: {}, fer: {}, cfg: null, ed: {}, sel: 'ALL', last: {}, cbFile: null };
+const PV = { bus: {}, pro: {}, klia: {}, fer: {}, tbs: {}, cfg: null, ed: {}, sel: 'ALL', last: {}, cbFile: null };
 
 const pvMk = o => o.y * 100 + o.m;
 const pvNext = (o, n) => { const d = toUTC(o); d.setUTCDate(d.getUTCDate() + (n || 1)); return fromJsDate(d); };
@@ -3558,17 +3558,34 @@ function pvFerryVouchers() {
   });
   return out;
 }
+// TBS (Maju TMAS): ONE voucher for the period, as you post it (M1TPV53/2611: "KIOSK SALES - [13/11/2026 - 15/11/2026]",
+// 8 lines kiosk/online × sales/MDR/insurance/MDR, dated T+2). MDR = sum of the per-day MDR (as in the TBS SALES MASTERLIST).
+function pvTbsLines(P, r, k, o) {
+  const lines = [], add = (lbl, x) => { if (!x) return; lines.push(pvL(P.acc, `${lbl} SALES - [${r}]`, x.sales, P.accD), pvL(P.contra, `${lbl} SALES (MDR) - [${r}]`, x.mS, P.contraD), pvL(P.acc, `${lbl} INSURANCE CHARGES - [${r}]`, x.ins, P.accD), pvL(P.contra, `${lbl} INSURANCE CHARGES (MDR) - [${r}]`, x.mI, P.contraD)); };
+  add('KIOSK', k); add('ONLINE', o); return lines.filter(x => x.amtC);
+}
 function pvTbsVouchers() {
   if (typeof tDays !== 'function') return [];
-  const P = pvP('TBS');
-  return tDays().map(D => {
-    const r = tCompute(D); if (!r.k && !r.o) return null;
-    const d = dmyStr(D.date), lines = [];
-    const add = (lbl, x) => { if (!x) return; lines.push(pvL(P.acc, `${lbl} SALES - [${d}]`, x.sales, P.accD), pvL(P.contra, `${lbl} SALES (MDR) - [${d}]`, x.mS, P.contraD), pvL(P.acc, `${lbl} INSURANCE CHARGES - [${d}]`, x.ins, P.accD), pvL(P.contra, `${lbl} INSURANCE CHARGES (MDR) - [${d}]`, x.mI, P.contraD)); };
-    add('KIOSK', r.k); add('ONLINE', r.o);
-    const warn = r.checks.filter(c => !c.ok && c.level !== 'info').map(c => c.label);
-    return { key: `tbs|${d}`, grp: 'TBS', series: P.series, payee: P.payee, desc: lines[0] ? lines[0].desc : `SALES [${d}]`, from: D.date, to: D.date, lines: lines.filter(x => x.amtC), P, srcBank: (r.k ? r.k.net : 0) + (r.o ? r.o.net : 0), srcLbl: 'Kiosk + Online net', file: 'TBS', warn };
-  }).filter(Boolean);
+  const P = pvP('TBS'), ds = tDays().map(D => ({ D, r: tCompute(D) })).filter(x => x.r.k || x.r.o).sort((a, b) => dKey(a.D.date) - dKey(b.D.date));
+  if (!ds.length) return [];
+  const sum = (f, k) => ds.reduce((a, x) => a + (x.r[f] ? x.r[f][k] || 0 : 0), 0), part = f => ds.some(x => x.r[f]) ? { sales: sum(f, 'sales'), mS: sum(f, 'mS'), ins: sum(f, 'ins'), mI: sum(f, 'mI'), net: sum(f, 'net') } : null;
+  const from = ds[0].D.date, to = ds[ds.length - 1].D.date, r = rangeText(from, to), k = part('k'), o = part('o'), lines = pvTbsLines(P, r, k, o);
+  const warn = ds.flatMap(x => x.r.checks.filter(c => !c.ok && c.level !== 'info').map(c => `${dmyStr(x.D.date)}: ${c.label}`));
+  return [{ key: `tbs|${dmyStr(from)}|${dmyStr(to)}`, grp: 'TBS', series: P.series, payee: P.payee, desc: `KIOSK SALES - [${r}]`, from, to, lines, P, srcBank: (k ? k.net : 0) + (o ? o.net : 0), srcLbl: 'Kiosk + Online net', file: 'TBS', warn }];
+}
+/* TBS SALES MASTERLIST (13.11 - 15.11).xlsx → the same voucher, read from its KIOSK / ONLINE "Grand Total" rows */
+function pvReadTbsML(wb, fileName) {
+  const ws = wb.worksheets.find(w => sheetGrid(w).g.slice(0, 4).some(r => r.some(c => /^TBS SALES$/i.test(pvTxt(c))))); if (!ws) return null;
+  const g = sheetGrid(ws).g, rr = g.find(r => /^sales date/i.test(pvTxt(r[0]))); if (!rr) return null;
+  const dt = pvTxt(rr[1]).split(/\s*-\s*/).map(x => anyDate(x)).filter(Boolean); if (!dt.length) return null;
+  const c = x => Math.round((num(x) || 0) * 100), sec = k => { const i = g.findIndex(r => pvTxt(r[0]).toUpperCase() === k); if (i < 0) return null; for (let r = i; r < g.length; r++) if (/^grand total/i.test(pvTxt(g[r][0]))) return { sales: c(g[r][1]), ins: c(g[r][2]), mS: c(g[r][3]), mI: c(g[r][4]), net: c(g[r][5]) }; return null; };
+  const k = sec('KIOSK'), o = sec('ONLINE'); if (!k && !o) return null;
+  return { file: fileName, from: dt[0], to: dt[dt.length - 1], k, o };
+}
+function pvTbsMLVoucher(x) {
+  const P = pvP('TBS'), r = rangeText(x.from, x.to), lines = pvTbsLines(P, r, x.k, x.o), warn = [];
+  const net = (x.k ? x.k.net : 0) + (x.o ? x.o.net : 0);
+  return { key: `tbsml|${dmyStr(x.from)}|${dmyStr(x.to)}`, grp: 'TBS', series: P.series, payee: P.payee, desc: `KIOSK SALES - [${r}]`, from: x.from, to: x.to, lines, P, srcBank: net, srcLbl: 'TOTAL (TBS SALES MASTERLIST)', file: x.file, warn };
 }
 function pvEngineBus() {
   const out = [];
@@ -3593,7 +3610,8 @@ function pvList() {
   Object.values(PV.fer || {}).forEach(x => out.push(pvFerryMLVoucher(x)));
   try { if (typeof pvKtmVouchers === 'function') pvKtmVouchers().forEach(v => out.push(v)); } catch (e) { console.error(e); }
   try { pvFerryVouchers().forEach(v => { if (!out.some(o => o.grp === v.grp && dmyStr(o.from) === dmyStr(v.from) && dmyStr(o.to) === dmyStr(v.to))) out.push({ ...v, eng: true }); }); } catch (e) { }
-  try { pvTbsVouchers().forEach(v => out.push({ ...v, eng: true })); } catch (e) { }
+  Object.values(PV.tbs || {}).forEach(x => out.push(pvTbsMLVoucher(x)));
+  try { pvTbsVouchers().forEach(v => { if (!out.some(o => o.grp === 'TBS' && dmyStr(o.from) === dmyStr(v.from) && dmyStr(o.to) === dmyStr(v.to))) out.push({ ...v, eng: true }); }); } catch (e) { }
   // edits, manual lines, dates, running numbers
   out.forEach(v => {
     const e = PV.ed[v.key] || {};
@@ -3673,6 +3691,8 @@ async function pvIngest(file) {
   if (!(u[0] === 0x50 && u[1] === 0x4b)) return null;
   const wb = await loadXlsx(buf), names = wb.worksheets.map(w => w.name);
   if (names.some(n => /^(MSM2TPV|M1TPV|M3TPV\s*)$/.test(n))) { PV.last = pvReadCashbook(wb); PV.cbFile = file.name; Object.assign(chip, { ok: true, kind: 'Import CashBook (last numbers)', note: Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV)/.test(o.doc)).map(o => o.doc).join(' · ') }); return chip; }
+  const tm = pvReadTbsML(wb, file.name);
+  if (tm) { PV.tbs = PV.tbs || {}; PV.tbs[`${dKey(tm.from)}|${dKey(tm.to)}`] = tm; Object.assign(chip, { ok: true, kind: 'PV · TBS (sales masterlist)', date: rangeText(tm.from, tm.to), note: `Kiosk ${fmtC(tm.k ? tm.k.net : 0)} · Online ${fmtC(tm.o ? tm.o.net : 0)}` }); return chip; }
   const fm = pvReadFerryML(wb, file.name);
   if (fm) { PV.fer = PV.fer || {}; PV.fer[`${fm.st}|${dKey(fm.from)}|${dKey(fm.to)}`] = fm; Object.assign(chip, { ok: true, kind: `PV · Ferry ${fm.st} (masterlist)`, date: rangeText(fm.from, fm.to), note: `Online NET ${fmtC(fm.on.net)} · agent ${fmtC(fm.ag.tot)}${fm.bf ? ' · b/f ' + fmtC(fm.bf) : ''}` }); return chip; }
   const b = typeof isCompletedSettlement === 'function' && isCompletedSettlement(wb) ? pvReadBus(wb, file.name) : null;
@@ -3688,7 +3708,7 @@ EXT.load.push(async () => { PV.cfg = await DB.get('pvCfg', null); pvCfg(); });
 
 /* ---------------- screen ---------------- */
 const PV_GRPS = [['ALL', 'All vouchers'], ['KT', 'Kuala Terengganu'], ['MS', 'Melaka Sentral'], ['PRO', 'Prolintas'], ['KLIA', 'KLIA TQMS'], ['FERRY', 'Ferry'], ['TBS', 'TBS'], ['SET', 'Codes & numbering']];
-const pvInGrp = (v, g) => g === 'ALL' || v.grp === g || (g === 'PRO' && (v.grp === 'SILK' || v.grp === 'LKSA')) || (g === 'FERRY' && /^fer(ry|ml)\|/.test(v.key));
+const pvInGrp = (v, g) => g === 'ALL' || v.grp === g || (g === 'PRO' && (v.grp === 'SILK' || v.grp === 'LKSA')) || (g === 'FERRY' && /^fer(ry|ml)\|/.test(v.key)) || (g === 'TBS' && v.grp === 'TBS');
 function pvCard(v) {
   const e = PV.ed[v.key] || {}, money = c => fmtC(c), id = esc(v.key);
   const bad = !v.ok, diff = v.srcBank != null ? v.total - v.manC - v.srcBank : 0;
@@ -3793,7 +3813,7 @@ if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
     else if (a === 'pvlback') { delete (ed(k).del || {})[b.dataset.oi]; renderAll(); }
     else if (a === 'pvlcopy') { const v = pvList().find(x => x.key === k), l = v && v.lines.find(x => b.dataset.xi != null ? x.xi === +b.dataset.xi : x.oi === +b.dataset.oi); if (!l) return; (ed(k).extra = ed(k).extra || []).push({ acc: l.acc, accD: l.accD, desc: l.desc, amtC: l.amtC, ...(l.proj != null ? { proj: l.proj } : {}) }); toast('Line copied — change it at the bottom of the voucher'); renderAll(); }
     else if (a === 'pvlreset') { if (!confirm('Undo every change you made on this voucher (lines, payee, description, payment method)?')) return; ['lines', 'del', 'extra', 'payee', 'desc', 'pm'].forEach(x => delete ed(k)[x]); renderAll(); }
-    else if (a === 'pvclr') { PV.bus = {}; PV.pro = {}; PV.klia = {}; PV.fer = {}; PV.ktm = {}; PV.ed = {}; S.files = (S.files || []).filter(f => f.module !== 'V'); renderAll(); }
+    else if (a === 'pvclr') { PV.bus = {}; PV.pro = {}; PV.klia = {}; PV.fer = {}; PV.ktm = {}; PV.tbs = {}; PV.ed = {}; S.files = (S.files || []).filter(f => f.module !== 'V'); renderAll(); }
     else if (a === 'pvdl') { const l = pvList().filter(v => !v.off), miss = l.filter(v => !v.doc).length, bad = l.filter(v => !v.ok).length; if (miss) { toast(`${miss} voucher(s) have no voucher no. — type the start number`, 'bad'); return; } const noAcc = l.filter(v => v.lines.some(x => !x.acc) || !v.payee).map(v => v.P.label); if (noAcc.length) { toast(`Account code / payee missing for: ${[...new Set(noAcc)].join(', ')} — fill them in Cash Book codes (or untick those vouchers)`, 'bad'); return; } if (bad && !confirm(`${bad} voucher(s) do not match their settlement total. Download anyway?`)) return; await busy('Building Import CashBook…', async () => saveBlob(`IMPORT CASHBOOK PV ${typeof cuToday === 'function' ? cuToday() : pvYYMM(l[0].date)}.xlsx`, await pvXlsx(l))); }
     else if (a === 'pvcopy') { const t = pvTsv(pvList(), b.dataset.v, !!b.dataset.h); try { await navigator.clipboard.writeText(t); toast(`${b.dataset.v}: header + ${t.split('\n').length - 1} rows copied (columns A–AQ) — in AutoCount click Paste from Clipboard`); } catch (er) { toast('Clipboard blocked by the browser', 'bad'); } }
   });
@@ -4247,6 +4267,51 @@ document.addEventListener('change', async e => {
 });
 
 
+/* ===== ext: emerge.js ===== */
+/* ====================== Daily Settlement email (KT / MS) straight into Outlook, with Cc ======================
+   Word mail merge can only fill To — it cannot Cc. These emails are made by the engine instead: one per operator email,
+   To = EMAIL, Cc = EMAIL_CC (the operator's PIC, from the email directory) + the fixed Cc below (finance), same wording and
+   table as MAIL MERGE TERMINAL … .docx, signature from Email · Contacts & signature. They go through the email method you
+   picked on the Email pages (Outlook drafts via the helper / New email / .eml) — nothing is ever sent by the engine. */
+const EM_CC0 = 'FINANCE - NSS IT SOLUTION SDN BHD <finance.nssit@gohub.com.my>';
+const emCfg = () => { const c = mlCfg(); c.emerge = c.emerge || { cc: EM_CC0, sig: 'OPS' }; return c.emerge; };
+const emM = v => { const n = Math.round((+v || 0) * 100) / 100; return n === 0 ? '-' : n < 0 ? `(${Math.abs(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : n.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+function emBody(P, r) {
+  const name = eName(P), rng = eDateRange(P), cols = P.cols, td = 'border:1px solid #9aa5b1;padding:4px 8px;font-size:9pt', th = td + ';background:#0E9FB8;color:#fff;font-weight:bold;text-align:center';
+  const rows = r.per.map((p, i) => `<tr><td style="${td};text-align:center">${i + 1}</td><td style="${td}">${esc(p.date)}</td><td style="${td}">${esc(p.co)}</td>${p.vals.map(v => `<td style="${td};text-align:right">${emM(v)}</td>`).join('')}<td style="${td};text-align:right">${emM(p.fin)}</td></tr>`).join('');
+  return `<p style="margin:0"><b style="color:#0E9FB8">DAILY SETTLEMENT STATEMENT</b><br><b>${esc(name)}</b><br>Detail Breakdown for Daily Settlement</p>
+<p>Bus Operator : <b>${esc(r.co)}</b><br>Settlement Date : <b>${esc(rng)}</b></p>
+<p>Dear Sir/Madam,</p><p>We are pleased to inform you that this is the Daily Settlement for ${esc(name)} for the date of ${esc(rng)}. Thank you.</p>
+<table style="border-collapse:collapse"><tr><th style="${th}">No.</th><th style="${th}">Date</th><th style="${th}">Company</th>${cols.map(c => `<th style="${th}">${esc(c.label)}</th>`).join('')}</tr>${rows}
+<tr><td colspan="${2 + cols.length}" style="${td};text-align:right;font-weight:bold">FINAL AMOUNT (RM)</td><td style="${td};text-align:right;font-weight:bold">${emM(r.total)}</td></tr></table>
+<p><i>Reminder: Please ensure any outstanding are settled within two (2) weeks from the settlement date.</i></p>
+<p>Kindly feedback or inform any inquiry to this email finance.nssit@gohub.com.my</p><p>Best regards,</p>`;
+}
+function emEmails(P) {
+  const C = emCfg(), name = eName(P), rng = eDateRange(P);
+  return eRecords(P).filter(r => r.to).map(r => {
+    const key = `EMERGE:${P.term}:${r.key}`; ML.edit[key] = emBody(P, r);
+    const cc = mlRcpt([r.cc, C.cc].filter(Boolean).join('; ').replace(/,/g, ';'));
+    return { id: 'EMERGE', key, title: r.co, to: mlRcpt(String(r.to).replace(/,/g, ';')), cc, subject: `Daily Settlement for ${name} for the date of ${rng}`, text: '', sig: C.sig, att: [] };
+  });
+}
+(function () {
+  if (typeof HTMLElement === 'undefined') return;
+  document.addEventListener('click', async e => {
+    const b = e.target.closest('[data-act="eoutlook"]'); if (!b) return;
+    const P = S.E.sets[S.eTerm]; if (!P) return;
+    const L = emEmails(P), noCc = L.filter(x => !x.cc.some(r => r.email && !/finance\.nssit@/i.test(r.email))).length;
+    if (!L.length) { toast('No operator has an email yet — fill EMAIL below', 'bad'); return; }
+    if (!confirm(`${L.length} emails (one per operator) into Outlook with method "${mlModeDef()[1]}".\nTo = EMAIL · Cc = EMAIL_CC (PIC) + ${emCfg().cc || '—'}${noCc ? `\n(${noCc} operators have no PIC in EMAIL_CC)` : ''}\n\nNothing is sent — you press Send in Outlook. Continue?`)) return;
+    await mlOpen(L);
+  });
+  document.addEventListener('change', async e => {
+    const t = e.target; if (!t.dataset || t.dataset.act !== 'emcc') return;
+    emCfg().cc = t.value.trim(); await mlSave(); toast('Saved: fixed Cc for the daily settlement emails');
+  });
+})();
+
+
 /* ===== ext: ktm.js ===== */
 /* ====================== KTM (TENANG CAPITAL) — RevenueSharingReportPdf ETS / KOMUTER → MPV voucher + RCgen ======================
    Your vouchers (KTM NOV PV.pdf, MPV01–05/2611): Pay To TENANG CAPITAL BERHAD, IBG, one line per day per product
@@ -4257,7 +4322,7 @@ const KTM_RC = {"head": "00|MYNSSITSOL|KTM TICKETING||B||||||||||||||||||||||||"
 const KTM_BEN = { acc: '550516140432', id: '280515D', bank: 'MBBEMYKL', mail: 'afwani@tenangcapital.com', cc: 'suraini@tenangcapital.com', from: 'finance@nssit.com.my', debit: '562666060244',
   name: { ETS: 'TENANG CAPITAL BERHAD - ETS', INTERCITY: 'TENANG CAPITAL BERHAD - INTERCITY', OTHERS: 'TENANG CAPITAL BERHAD - ETS', KOMUTER: 'TENANG CAPITAL BERHAD - KOMUTER' } };
 const KTM_PRODS = ['ETS', 'INTERCITY', 'OTHERS', 'KOMUTER'];
-PV_DEF.KTM = { label: 'KTM (Tenang Capital)', series: 'MPV', payee: 'TENANG CAPITAL BERHAD', proj: '', acc: '325-K001', contra: '', temp: '325-TM02', pm: '', by: 'IBG', bc: 0, float: 2, accD: 'KTM STATION [TCT APP]', tempD: 'TEMPORARY CONTROL ACCOUNT [KTM]' };
+PV_DEF.KTM = { label: 'KTM (Tenang Capital)', series: 'MPV', payee: 'TENANG CAPITAL BERHAD', proj: 'KTM', acc: '325-K001', contra: '', temp: '325-TM02', pm: 'MAYBANK - PUTRA INDA', by: 'IBG', bc: 0, float: 2, accD: 'KTM STATION [TCT APP]', tempD: 'TEMPORARY CONTROL ACCOUNT [KTM]' };
 if (!PV_ORDER.includes('KTM')) PV_ORDER.push('KTM');
 if (!PV_GRPS.some(g => g[0] === 'KTM')) PV_GRPS.splice(PV_GRPS.findIndex(g => g[0] === 'SET'), 0, ['KTM', 'KTM']);
 PV.ktm = PV.ktm || {};
@@ -4343,9 +4408,8 @@ function pvKtmVouchers() {
       if (d.KOMUTER == null) warn.push(`${dmyStr(d.date)}: RevenueSharingReportPdf KOMUTER not loaded`);
       if (d.warn) warn.push(`${dmyStr(d.date)}: ${d.warn}`);
     });
-    if (!P.pm) warn.push('Payment method (AutoCount code) for KTM is not set yet — fill it once in Codes & numbering');
     const tot = lines.reduce((a, l) => a + l.amtC, 0);
-    return { key: `ktm|${dmyStr(from)}|${dmyStr(to)}`, grp: 'KTM', series: P.series, payee: P.payee, desc: `SALES [${rangeText(from, to)}]`, from, to, lines, P, srcBank: tot, srcLbl: 'Revenue sharing reports', file: days.flatMap(d => d.files).join(' + '), warn, ktmDays: days };
+    return { key: `ktm|${dmyStr(from)}|${dmyStr(to)}`, grp: 'KTM', series: P.series, payee: P.payee, desc: `SALES [${rangeText(from, to)}] - KTM/ETS/INTERCITY/OTHERS`, from, to, lines, P, srcBank: tot, srcLbl: 'Revenue sharing reports', file: days.flatMap(d => d.files).join(' + '), warn, ktmDays: days };
   });
 }
 /* RCgen (Maybank bulk payment .txt — same layout and hash as your KTM RCgen file): per day ETS · INTERCITY · OTHERS · KOMUTER,
@@ -6659,7 +6723,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v62';
+  const VER = 'v63';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6718,7 +6782,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v62';
+const SE_VER = 'v63';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
