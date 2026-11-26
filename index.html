@@ -2885,7 +2885,7 @@ function eDirHtml() {
   <div class="row" style="margin:8px 0"><input class="search" id="e-dirq" placeholder="Search code / name / email…" value="${esc(S.eDirQ || '')}"><span class="sp"></span><button class="btn" data-act="edirx">Export directory (.xlsx)</button></div>
   <div class="scroll tall"><table class="t dense"><tr><th>Code (as in settlement)</th><th>Company name</th><th>EMAIL</th><th>EMAIL_CC</th><th>Source</th><th></th></tr>
   <tr><td><input class="in" id="e-nk" placeholder="NEW CODE" style="width:110px"></td><td><input class="in" id="e-nn" placeholder="Name (optional)" style="min-width:200px"></td><td><input class="in" id="e-nt" placeholder="email@…" style="min-width:220px"></td><td><input class="in" id="e-nc" placeholder="cc (optional)" style="min-width:200px"></td><td colspan="2"><button class="btn pri" data-act="ediradd" data-t="${t}">+ Add</button></td></tr>
-  ${rows.map(([k, x]) => `<tr class="${x.to ? '' : 'rneg'}"><td><b>${esc(x.co || k)}</b></td><td><input class="in" style="min-width:200px" data-act="edired" data-t="${t}" data-k="${esc(k)}" data-f="name" value="${esc(x.name || '')}"></td><td><input class="in" style="min-width:220px" data-act="edired" data-t="${t}" data-k="${esc(k)}" data-f="to" value="${esc(x.to || '')}"></td><td><input class="in" style="min-width:200px" data-act="edired" data-t="${t}" data-k="${esc(k)}" data-f="cc" value="${esc(x.cc || '')}"></td><td><small>${esc(x.src || '')}${x.upd ? ' · ' + esc(x.upd) : ''}</small></td><td><button class="btn" title="Delete" data-act="edirdel" data-t="${t}" data-k="${esc(k)}">🗑</button></td></tr>`).join('')}
+  ${rows.map(([k, x]) => `<tr class="${x.to ? '' : 'rneg'}"><td><b>${esc(x.co || k)}</b></td><td><input class="in" style="min-width:420px" title="Several Cc: separate with ;" data-act="edired" data-t="${t}" data-k="${esc(k)}" data-f="name" value="${esc(x.name || '')}"></td><td><input class="in" style="min-width:220px" data-act="edired" data-t="${t}" data-k="${esc(k)}" data-f="to" value="${esc(x.to || '')}"></td><td><input class="in" style="min-width:420px" title="Several Cc: separate with ;" data-act="edired" data-t="${t}" data-k="${esc(k)}" data-f="cc" value="${esc(x.cc || '')}"></td><td><small>${esc(x.src || '')}${x.upd ? ' · ' + esc(x.upd) : ''}</small></td><td><button class="btn" title="Delete" data-act="edirdel" data-t="${t}" data-k="${esc(k)}">🗑</button></td></tr>`).join('')}
   </table></div></section>`;
 }
 function renderE() {
@@ -2904,7 +2904,7 @@ function renderE() {
   <div class="actions"><button class="btn pri" data-act="edl" data-v="X">⬇ ${esc(pth.xlsx)}</button><button class="btn pri" data-act="edl" data-v="W">⬇ ${esc(pth.docx)}</button><button class="btn" data-act="edl" data-v="Z">⬇ ZIP kedua-dua</button><button class="btn ok" data-act="eoutlook" title="One email per operator straight into Outlook: To = EMAIL, Cc = EMAIL_CC (PIC) + the fixed Cc — Word mail merge cannot Cc">📨 Emails in Outlook (To + Cc PIC)</button>${ts.length > 1 ? '<button class="btn" data-act="edl" data-v="ALL">ZIP all terminals</button>' : ''}</div>
   <p class="hint"><b>Need Cc (operator PIC)?</b> Use <b>📨 Emails in Outlook</b>: one email per operator, To = EMAIL, Cc = EMAIL_CC (operator PIC) + everyone here: ${typeof emCcHtml === 'function' ? emCcHtml() : ''} Fill the PIC in the EMAIL_CC column below (kept in the directory). Word mail merge (below) can only fill To.</p><p class="hint">Save both files in the folder above → open the .docx → <i>Yes</i> on the SQL prompt → Finish &amp; Merge → Send Email Messages (To: EMAIL, Subject already filled, HTML format).</p></section>`;
   h += `<section class="card"><h3>Penerima <span class="pill">${R.length}</span></h3><div class="scroll tall"><table class="t dense"><tr><th>Company</th><th>EMAIL</th><th>EMAIL_CC</th>${P.days.map(D => `<th class="r">${esc(dmyStr(D.date))}</th>`).join('')}<th class="r">FINAL_AMOUNT</th></tr>
-  ${R.map(r => `<tr class="${r.to ? '' : 'rneg'}"><td><b>${esc(r.co)}</b></td><td><input class="in" style="min-width:230px" data-act="edired" data-t="${P.term}" data-k="${esc(r.key)}" data-co="${esc(r.co)}" data-f="to" value="${esc(r.to)}"></td><td><input class="in" style="min-width:200px" data-act="edired" data-t="${P.term}" data-k="${esc(r.key)}" data-co="${esc(r.co)}" data-f="cc" value="${esc(r.cc)}"></td>${r.per.map(p => `<td class="r">${p.has ? moneyHtml(Math.round(p.fin * 100)) : '<span class="z">–</span>'}</td>`).join('')}<td class="r"><b>${moneyHtml(Math.round(r.total * 100))}</b></td></tr>`).join('')}</table></div></section>`;
+  ${R.map(r => `<tr class="${r.to ? '' : 'rneg'}"><td><b>${esc(r.co)}</b></td><td><input class="in" style="min-width:230px" data-act="edired" data-t="${P.term}" data-k="${esc(r.key)}" data-co="${esc(r.co)}" data-f="to" value="${esc(r.to)}"></td><td><input class="in" style="min-width:420px" title="Several Cc: separate with ;" data-act="edired" data-t="${P.term}" data-k="${esc(r.key)}" data-co="${esc(r.co)}" data-f="cc" value="${esc(r.cc)}"></td>${r.per.map(p => `<td class="r">${p.has ? moneyHtml(Math.round(p.fin * 100)) : '<span class="z">–</span>'}</td>`).join('')}<td class="r"><b>${moneyHtml(Math.round(r.total * 100))}</b></td></tr>`).join('')}</table></div></section>`;
   panel().innerHTML = h + eDirHtml() + setH;
 }
 async function downloadE(v) {
@@ -6777,7 +6777,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v65';
+  const VER = 'v66';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6836,7 +6836,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v65';
+const SE_VER = 'v66';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
