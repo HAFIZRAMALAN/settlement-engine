@@ -532,7 +532,20 @@ async function slimXlsx(buf) {
   }
   return z.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
 }
-async function loadXlsx(buf) { const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await slimXlsx(buf)); return wb; }
+async function loadXlsx(buf) {
+  const slim = await slimXlsx(buf);
+  try { const wb = new ExcelJS.Workbook(); await wb.xlsx.load(slim); return wb; }
+  catch (e) {   // files re-saved by other tools (comments in xl/comments/…, table parts ExcelJS cannot read): read again without
+    const z = await JSZip.loadAsync(slim);   // comments / notes / table definitions — the cell values are untouched
+    for (const n of Object.keys(z.files)) {
+      if (/^xl\/(comments|threadedComments|persons|tables\/)|^xl\/drawings\/(commentsDrawing|vmlDrawing)[^/]*\.vml$/i.test(n)) { z.remove(n); continue; }
+      if (/^xl\/worksheets\/_rels\/.*\.rels$/.test(n)) { const t = await z.file(n).async('string'); z.file(n, t.replace(/<Relationship [^>]*Type="[^"]*\/(comments|vmlDrawing|threadedComment|table)"[^>]*\/>/g, '')); }
+      else if (/^xl\/worksheets\/[^/]+\.xml$/.test(n)) { const t = await z.file(n).async('string'); if (/<legacyDrawing\b|<tableParts\b/.test(t)) z.file(n, t.replace(/<legacyDrawing\b[^>]*\/>/g, '').replace(/<tableParts\b[\s\S]*?<\/tableParts>|<tableParts\b[^>]*\/>/g, '')); }
+      else if (n === '[Content_Types].xml') { const t = await z.file(n).async('string'); z.file(n, t.replace(/<Override [^>]*PartName="\/xl\/(comments|threadedComments|persons|tables)[^"]*"[^>]*\/>/g, '')); }
+    }
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await z.generateAsync({ type: 'arraybuffer' })); return wb;
+  }
+}
 function detectTerm(text) {
   const t = text.toLowerCase();
   const p = S.projects.find(p => p.kind === 'terminal' && (p.match || []).some(m => m && t.includes(clean(m).toLowerCase())));
@@ -2699,6 +2712,17 @@ function eApply(list, src, file) {
   S.E.dirLog = rep; return rep;
 }
 // Bus Operators Summary.xlsx → sheets "Bank in template KT" / "Bank in template MS NEW" (latest REF date per terminal wins)
+// Cc for one operator = every email address from the EMAIL 2 / E-INVOICE column to the end of the row (each operator has its
+// own: e.g. HANDAL INDAH → finance@handalindah.com.my; nurhaslina@handalindah.com…), without our own addresses (finance@nssit…)
+function eBosCc(row, H) {
+  const from = Math.min(...['EMAIL 2', 'E-INVOICE'].map(k => H[k]).filter(Boolean)); if (!isFinite(from)) return '';
+  const out = [];
+  for (let c = from; c <= Math.max(row.cellCount, from + 6); c++) {
+    const t = eCell(row.getCell(c)); (String(t).match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || []).forEach(m => {
+      if (/@(nssit|gohub)\.com(\.my)?$/i.test(m) || out.some(x => x.toLowerCase() === m.toLowerCase())) return; out.push(m); });
+  }
+  return out.join('; ');
+}
 function eReadBusOps(wb) {
   const best = {};
   wb.worksheets.forEach(ws => {
@@ -2709,7 +2733,7 @@ function eReadBusOps(wb) {
     ws.eachRow((row, r) => {
       if (r < 2) return; const m = /^([A-Z]+)\s*-\s*(\d{6})/.exec(eCell(row.getCell(1))), co = eCell(row.getCell(H.REF2)); if (!m || !co) return;
       const t = m[1], g = by[t] = by[t] || { d: m[2], rows: new Map() }; if (m[2] > g.d) g.d = m[2];
-      if (!g.rows.has(norm(co))) g.rows.set(norm(co), { t, co, name: H['COMPANY NAME'] ? eCell(row.getCell(H['COMPANY NAME'])) : '', to: eMail(eCell(row.getCell(H.EMAIL))), cc: H['E-INVOICE'] ? eMail(eCell(row.getCell(H['E-INVOICE']))) : '' });
+      if (!g.rows.has(norm(co))) g.rows.set(norm(co), { t, co, name: H['COMPANY NAME'] ? eCell(row.getCell(H['COMPANY NAME'])) : '', to: eMail(eCell(row.getCell(H.EMAIL))), cc: eBosCc(row, H) });
     });
     Object.entries(by).forEach(([t, g]) => { if (!best[t] || g.d > best[t].d) best[t] = { ...g, sheet: ws.name }; });
   });
@@ -4274,8 +4298,8 @@ document.addEventListener('change', async e => {
    The look is the same as MAIL MERGE TERMINAL … .docx (eDocXml): teal kicker, navy terminal name, teal rule, navy table head,
    light-blue Final column, "Best regards, FINANCE OPERATION / NSS IT Solution Sdn Bhd" and the GO HUB banner.
    They go through the email method picked on the Email pages (Outlook drafts via the helper / New email / .eml). Never sent. */
-const EM_CC0 = 'FINANCE - NSS IT SOLUTION SDN BHD <finance.nssit@gohub.com.my>';
-const emCfg = () => { const c = mlCfg(); c.emerge = c.emerge || { cc: EM_CC0 }; return c.emerge; };
+// the email already comes FROM finance, so no fixed Cc by default — each operator's own Cc comes from EMAIL_CC
+const emCfg = () => { const c = mlCfg(); if (!c.emerge || !c.emerge.v2) c.emerge = { cc: '', v2: true }; return c.emerge; };
 const emM = v => { const n = Math.round((+v || 0) * 100) / 100; if (Math.abs(n) < 0.005) return '-'; const s = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return n < 0 ? `(${s})` : s; };
 const EM_F = "font-family:Calibri,Aptos,Arial,sans-serif";
 function emBody(P, r) {
@@ -6753,7 +6777,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v64';
+  const VER = 'v65';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6812,7 +6836,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v64';
+const SE_VER = 'v65';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
