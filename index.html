@@ -1317,10 +1317,17 @@ function ingestTracker(wb, chip) {
   const grabG = (g, from, to) => { const out = []; for (let r = from; r < to && r < g.length; r++) { const x = g[r]; if (![0, 1, 2, 3].some(k => clean(x[k]) !== '')) continue; const d = anyDate(x[0]); out.push({ date: d, dateText: d ? dmyStr(d) : clean(x[0]), ref: clean(x[1]), added: cents(x[2]), rec: cents(x[3]), clear: x[5] instanceof Date ? dmyStr(fromJsDate(x[5])) : clean(x[5]) }); } return out; };
   const per = wb.worksheets.filter(w => /^(baki|outstanding balance)/i.test(clean(w.getCell('A2').value)) && /UNDERSALES TRACKER/i.test(clean(w.getCell('A1').value)));
   if (per.length) {   // one sheet per station: title, "Outstanding balance", blank, header (row 4), data from row 5
-    S.C.tracker = S.C.tracker || {};
-    per.forEach(w => { S.C.tracker[norm(w.name)] = grabG(sheetGrid(w).g, 4, Infinity); });
+    // station from the title ("UNDERSALES TRACKER - MERSING", "UNDERSALES TRACKER - MERSING - NOV 2026"); one sheet per month is
+    // read as one list — the "Balance b/f from <month>" line on a later month's sheet is only a carry-over, so it is skipped
+    S.C.tracker = S.C.tracker || {}; const got = {};
+    per.forEach(w => {
+      const t = clean(w.getCell('A1').value).replace(/^UNDERSALES TRACKER\s*-\s*/i, '').replace(/\s*-\s*[A-Z]{3}\s+\d{4}\s*$/i, ''), st = norm(t || w.name);
+      const rows = grabG(sheetGrid(w).g, 4, Infinity).filter(r => !(got[st] && /^Balance b\/f from /i.test(r.ref)));
+      got[st] = (got[st] || []).concat(rows);
+    });
+    Object.keys(got).forEach(st => { S.C.tracker[st] = got[st]; });
     DB.set('tracker', S.C.tracker);
-    chip.ok = true; chip.note = per.map(w => `${w.name} ${S.C.tracker[norm(w.name)].length} rows`).join(' · '); return chip;
+    chip.ok = true; chip.note = Object.keys(got).map(st => `${st} ${got[st].length} rows`).join(' · ') + (per.length > Object.keys(got).length ? ` (${per.length} month sheets)` : ''); return chip;
   }
   const ws = wb.getWorksheet('UNDERSALES') || wb.worksheets[0], { g } = sheetGrid(ws);
   // a block = station name row, then "Outstanding balance" row, then header row, then data
@@ -1419,7 +1426,8 @@ function trackerAfter() {
   });
   return out;
 }
-const trackerFile = () => { const p = ferryProj(); return `UNDERSALES ${((p && p.filePrefix) || 'FERI').replace(/_/g, ' ')}.xlsx`; };
+const trackerFile = st => st ? `UNDERSALES ${st}.xlsx` : `UNDERSALES ${trackerStations().join(' & ')}`;
+const TRK_MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 // old long notes -> short ones
 const trkAuto = t => /^(Short: NET|Recovered from settlement|Under-settlement|Recovered from \d|Kurang: NET|Bayar balik dari)/i.test(clean(t));
 // a row with no date and no amount is a note (free text): notes go under the table, never inside it; rows are kept in date order
@@ -1433,41 +1441,55 @@ const trkRef = t => { t = clean(t); let m;
   if (/^(Opening balance b\/f|Baki b\/f)/i.test(t)) return 'Balance b/f (manual)';
   if (/^(Opening balance adjustment|Pelarasan baki)/i.test(t)) return 'Balance b/f adjustment (manual)';
   return t; };
-async function genTracker(Tr) {
+// one file per station (UNDERSALES MERSING.xlsx · UNDERSALES TANJUNG GEMOK.xlsx), one sheet per month (2610, 2611, 2612 …):
+// each new month starts with "Balance b/f from <last month>", the older months stay as they were (history); the newest month is the open tab
+async function genTracker(Tr, st) {
   const wb = new ExcelJS.Workbook(), bd = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }, MON = '#,##0.00;[Red](#,##0.00);"-"';
   const head = { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF305496' } }, alignment: { horizontal: 'center', vertical: 'middle', wrapText: true }, border: bd };
   const dt = v => { if (!v) return null; const d = anyDate(v); return d ? toUTC(d) : v; };
-  Object.keys(Tr).forEach(st => {
-    const all = trkSort(Tr[st] || []), rows = all.filter(r => !trkNote(r)), notes = all.filter(trkNote).map(r => clean([r.dateText, r.ref].filter(Boolean).join(' '))).filter(t => t && !/^notes?:?$/i.test(t));
-    const ws = wb.addWorksheet(st.slice(0, 31), { views: [{ state: 'frozen', ySplit: 4 }] }), n = Math.max(30, rows.length + 10), s = 5, e = s + n - 1;
+  const all = trkSort(Tr[st] || []), rows = all.filter(r => !trkNote(r)), notes = all.filter(trkNote).map(r => clean([r.dateText, r.ref].filter(Boolean).join(' '))).filter(t => t && !/^notes?:?$/i.test(t));
+  const mk = d => d.y * 12 + d.m - 1, R = S.C.report, dated = rows.filter(r => r.date);
+  let m0 = dated.length ? Math.min(...dated.map(r => mk(r.date))) : (R ? mk(R.dateTo) : null);
+  const m1 = Math.max(m0 == null ? 0 : m0, ...dated.map(r => mk(r.date)), R && R.dateTo ? mk(R.dateTo) : 0);
+  if (m0 == null) m0 = m1;
+  let bal = 0, sheetN = 0;
+  for (let mm = m0; mm <= m1; mm++) {
+    const y = Math.floor(mm / 12), mo = mm % 12, lbl = `${TRK_MON[mo]} ${y}`, nm = `${String(y).slice(2)}${String(mo + 1).padStart(2, '0')}`;
+    const mine = rows.filter(r => r.date ? mk(r.date) === mm : mm === m0);
+    const carry = sheetN && bal ? [{ date: { y, m: mo + 1, d: 1 }, ref: `Balance b/f from ${TRK_MON[(mo + 11) % 12]} ${mo ? y : y - 1}`, added: bal > 0 ? bal : 0, rec: bal < 0 ? -bal : 0, clear: '' }] : [];
+    const list = carry.concat(mine);
+    const ws = wb.addWorksheet(nm, { views: [{ state: 'frozen', ySplit: 4 }] }), n = Math.max(30, list.length + 10), s0 = 5, e = s0 + n - 1;
     ws.columns = [{ width: 12 }, { width: 42 }, { width: 14 }, { width: 15 }, { width: 14 }, { width: 13 }];
-    Object.assign(ws.getCell('A1'), { value: `UNDERSALES TRACKER - ${st}`, font: { bold: true, size: 14 } });
+    Object.assign(ws.getCell('A1'), { value: `UNDERSALES TRACKER - ${st} - ${lbl}`, font: { bold: true, size: 14 } });
     Object.assign(ws.getCell('A2'), { value: 'Outstanding balance (RM):', font: { bold: true, size: 12 } });
-    Object.assign(ws.getCell('C2'), { value: fx(`SUM(C${s}:C${e})-SUM(D${s}:D${e})`, rows.reduce((x, r) => x + r.added - r.rec, 0) / 100), numFmt: MON, font: { bold: true, size: 12, color: { argb: 'FF9C0006' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } }, border: bd });
-    ['Date', 'Description', 'Undersale (RM)', 'Recovered (RM)', 'Balance (RM)', 'Date Cleared'].forEach((h, i) => Object.assign(ws.getCell(4, i + 1), { value: h, style: head }));
+    const end = list.reduce((x, r) => x + r.added - r.rec, 0);
+    Object.assign(ws.getCell('C2'), { value: fx(`SUM(C${s0}:C${e})-SUM(D${s0}:D${e})`, end / 100), numFmt: MON, font: { bold: true, size: 12, color: { argb: 'FF9C0006' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } }, border: bd });
+    ['SALES Date', 'Description', 'Undersale (RM)', 'Recovered (RM)', 'Balance (RM)', 'SALES Date Cleared'].forEach((h, i) => Object.assign(ws.getCell(4, i + 1), { value: h, style: head }));
     ws.getRow(4).height = 28;
     let run = 0;
     for (let i = 0; i < n; i++) {
-      const r = s + i, x = rows[i], set = (c, v, f) => { const z = ws.getCell(r, c); z.value = v; z.border = bd; if (f) z.numFmt = f; };
+      const r = s0 + i, x = list[i], set = (c, v, f) => { const z = ws.getCell(r, c); z.value = v; z.border = bd; if (f) z.numFmt = f; };
       if (x) run += x.added - x.rec;
       set(1, x ? (x.date ? toUTC(x.date) : x.dateText) : null, 'dd/mm/yyyy'); ws.getCell(r, 1).alignment = { horizontal: 'right' };
       set(2, x ? trkRef(x.ref) : null); ws.getCell(r, 2).alignment = { wrapText: true, vertical: 'top' };
       set(3, x && x.added ? x.added / 100 : null, MON);
       set(4, x && x.rec ? x.rec / 100 : null, MON);
-      set(5, fx(`IF(AND($C${r}="",$D${r}=""),"",SUM($C$${s}:$C${r})-SUM($D$${s}:$D${r}))`, x ? run / 100 : ''), MON);
+      set(5, fx(`IF(AND($C${r}="",$D${r}=""),"",SUM($C$${s0}:$C${r})-SUM($D$${s0}:$D${r}))`, x ? run / 100 : ''), MON);
       set(6, x ? dt(x.clear) : null, 'dd/mm/yyyy');
       if (x && x.added) ws.getCell(r, 3).font = { color: { argb: 'FF9C0006' } };
       if (x && x.rec) ws.getCell(r, 4).font = { color: { argb: 'FF006100' } };
+      if (x && /^Balance b\/f from /.test(x.ref)) ws.getCell(r, 2).font = { italic: true, bold: true };
       if (x && trkRef(x.ref).length > 46) ws.getRow(r).height = 15 * Math.ceil(trkRef(x.ref).length / 46);
     }
-    // notes: under the table, merged across the sheet and wrapped, so no column ever has to be widened
     let last = e;
-    if (notes.length) {
+    if (notes.length && mm === m1) {
       Object.assign(ws.getCell(e + 2, 1), { value: 'Notes', font: { bold: true } });
       notes.forEach((t, i) => { const r = e + 3 + i; ws.mergeCells(r, 1, r, 6); Object.assign(ws.getCell(r, 1), { value: t, alignment: { wrapText: true, vertical: 'top' } }); ws.getRow(r).height = 15 * Math.max(1, Math.ceil(t.length / 105)); last = r; });
     }
     ws.pageSetup.printArea = `A1:F${last}`;
-  });
+    bal += end; sheetN++;
+  }
+  wb.views = [{ activeTab: Math.max(0, sheetN - 1) }];
   return wbBlob(wb);
 }
 
@@ -3095,15 +3117,15 @@ function cTrk() {
   const el = $('#c-trk'); if (!el) return; const R = S.C.report;
   const T = trackerAfter();
   el.innerHTML = `<h3>Tracker after this report</h3><p class="hint">Rows for ${dmyStr(R.dateTo)} added (M8). Re-running the same date replaces the old rows.</p>` + Object.keys(T).map(st => { const rows = T[st], bal = rows.reduce((a, r) => a + r.added - r.rec, 0); return `<h4>${st} — balance ${fmtC(bal)}</h4>` + (rows.length ? `<table class="t dense"><tr><th>Date</th><th>Reference</th><th class="r">Added</th><th class="r">Recovered</th></tr>${rows.slice(-6).map(r => `<tr><td>${esc(r.dateText)}</td><td>${esc(r.ref)}</td><td class="r">${r.added ? fmtC(r.added) : ''}</td><td class="r">${r.rec ? fmtC(r.rec) : ''}</td></tr>`).join('')}</table>${rows.length > 6 ? `<p class="muted">… ${rows.length - 6} earlier rows</p>` : ''}` : '<p class="muted">No movements.</p>'); }).join('') +
-    `<div class="actions"><button class="btn" data-act="dlc" data-v="TRK">⬇ ${esc(trackerFile())}</button><button class="btn pri" data-act="dlc" data-v="ALL">⬇ ZIP (${stations().length} masterlist + tracker)</button><button class="btn ok" data-act="dlc" data-v="SAVE">Save tracker in browser</button></div>`;
+    `<div class="actions">${trackerStations().map(st => `<button class="btn" data-act="dlc" data-v="TRK:${esc(st)}">⬇ ${esc(trackerFile(st))}</button>`).join('')}<button class="btn pri" data-act="dlc" data-v="ALL">⬇ ZIP (${stations().length} masterlist + tracker)</button><button class="btn ok" data-act="dlc" data-v="SAVE">Save tracker in browser</button></div>`;
 }
 async function downloadC(v) {
   const R = S.C.report;
   if (v === 'SAVE') { S.C.tracker = trackerAfter(); await DB.set('tracker', S.C.tracker); toast('Tracker saved in the browser. Download the file too for your records.'); cSt(); cTrk(); return; }
   await busy('Building Excel files…', async () => {
     const one = async st => ({ name: `${stFile(st)}_SALES_MASTERLIST_${stampRange(S.C.report.dateFrom, S.C.report.dateTo)}.xlsx`, blob: await genMasterlist(st) });
-    if (v === 'TRK') { saveBlob(trackerFile(), await genTracker(trackerAfter())); return; }
-    if (v === 'ALL') { const z = new JSZip(); for (const st of stations()) { if (computeC(st)) { const f = await one(st); z.file(f.name, f.blob); } } z.file(trackerFile(), await genTracker(trackerAfter())); saveBlob(`${(ferryProj() || {}).filePrefix || 'FERI'}_${stampRange(S.C.report.dateFrom, S.C.report.dateTo)}.zip`, await z.generateAsync({ type: 'blob' })); return; }
+    if (v === 'TRK' || /^TRK:/.test(v)) { const T = trackerAfter(), only = v.slice(4); for (const st of Object.keys(T)) if (!only || only === st) saveBlob(trackerFile(st), await genTracker(T, st)); return; }
+    if (v === 'ALL') { const z = new JSZip(); for (const st of stations()) { if (computeC(st)) { const f = await one(st); z.file(f.name, f.blob); } } { const T = trackerAfter(); for (const st of Object.keys(T)) z.file(trackerFile(st), await genTracker(T, st)); } saveBlob(`${(ferryProj() || {}).filePrefix || 'FERI'}_${stampRange(S.C.report.dateFrom, S.C.report.dateTo)}.zip`, await z.generateAsync({ type: 'blob' })); return; }
     const f = await one(v); saveBlob(f.name, f.blob);
   });
 }
@@ -3273,18 +3295,19 @@ const PV_DEF = {
   SILK: { label: 'Prolintas SILK', series: 'M1TPV', payee: 'SISTEM LINGKARAN-LEBUHRAYA KAJANG SDN.BHD. (SILK)', proj: 'P-SILK', acc: '325-P002', contra: '326-P001', temp: '325-TM11', pm: 'MBB1 - IBG', by: 'IBG', bc: 0.5, float: 2, accD: 'SILK', contraD: 'CONTRA ACCOUNT [PROLINTAS]', tempD: 'TEMPORARY CONTROL ACCOUNT [SILK]' },
   KLIA: { label: 'KLIA TQMS', series: 'M3TPV', payee: '', proj: 'KLIA1-TQMS', acc: '325-KA02', contra: '326-KT02', loan: '405-G001', temp: '325-TM13', pm: 'MBB (2674) - SHAFTSB', by: 'TRANSFER', bc: 0, float: 2, accD: 'KLIA', contraD: 'CONTRA ACCOUNT [KLIA]', tempD: 'TEMPORARY CONTROL ACCOUNT [KLIA]', loanD: 'LOAN SETTLEMENT' },
   // Mersing: payee + project from the AutoCount screen (M1TPV67/2611); its account codes are not in the Import CashBook file — fill them in Codes
-  MERSING: { label: 'Ferry Mersing', series: 'M1TPV', payee: 'BISTARI GEMILANG TRAVEL SDN BHD (MERSING)', proj: 'MERSING', acc: '', contra: '', temp: '', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'MERSING', contraD: 'CONTRA ACCOUNT [MERSING]', tempD: 'TEMPORARY CONTROL ACCOUNT [MERSING]' },
-  'TANJUNG GEMOK': { label: 'Ferry Tanjung Gemok', series: 'M1TPV', payee: '', proj: '', acc: '', contra: '', temp: '', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'TANJUNG GEMOK', contraD: 'CONTRA ACCOUNT [TANJUNG GEMOK]', tempD: 'TEMPORARY CONTROL ACCOUNT [TANJUNG GEMOK]' },
+  // Ferry: from your vouchers M1TPV57/2611 (Mersing, SALES [16/11/2026], dated 18/11) and M1TPV19/2610 (Tanjung Gemok) — paid T+2
+  MERSING: { label: 'Ferry Mersing', series: 'M1TPV', payee: 'BISTARI GEMILANG TRAVEL SDN BHD (MERSING)', proj: 'MERSING', acc: '325-ME01', contra: '326-ME01', temp: '325-TM14', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, lag: 2, accD: 'MERSING', contraD: 'CONTRA ACCOUNT [MERSING]', tempD: 'TEMPORARY CONTROL ACCOUNT [MERSING]' },
+  'TANJUNG GEMOK': { label: 'Ferry Tanjung Gemok', series: 'M1TPV', payee: 'BISTARI GEMILANG SHIPPING SDN BHD (TANJUNG GEMOK)', proj: 'MERSING', acc: '325-ME02', contra: '326-ME01', temp: '325-TM14', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, lag: 2, accD: 'TANJUNG GEMOK', contraD: 'CONTRA ACCOUNT [MERSING]', tempD: 'TEMPORARY CONTROL ACCOUNT [MERSING]' },
   TBS: { label: 'TBS (Maju TMAS)', series: 'M1TPV', payee: 'MAJU TMAS SDN BHD', proj: 'TBS', acc: '325-TB01', contra: '326-TB01', temp: '325-TM09', pm: 'MBB1 - IBG', by: 'IBG', bc: 0, float: 2, accD: 'TBS', contraD: 'CONTRA ACCOUNT [TBS]', tempD: 'TEMPORARY CONTROL ACCOUNT [TBS]' }
 };
 // KLIA operator code in the report → AutoCount payee (M3TPV history)
 const PV_KOPS = { ALM: 'ALM RESOURCES SDN BHD', EFXTRANSPORT: 'EFX TRAVEL & TOURS SDN BHD', GAPTEK: 'GAPTEK TRAVEL & TOUR SDN BHD', GEMBIRACESB: 'CITY EXECUTIVE TAXICABS SDN BHD', GEMBIRASAING: 'SAING ENTERPRISE SDN BHD', KLASSSERVIS: 'KLASS SERVIS (M) SDN BHD', PUJANGGA: 'PUJANGGA MOTOR SDN BHD', SUNLIGHT: 'SUNLIGHT TAXI SDN BHD', YEWNITED: 'YEWNITED PARTNERS SDN BHD' };
 const PV_ORDER = ['MS', 'LKSA', 'SILK', 'KT', 'MERSING', 'TANJUNG GEMOK', 'TBS', 'KLIA'];   // M1TPV64-68/2611: LKSA, SILK, KT, MERSING, TBS
 const PV_MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const PV = { bus: {}, pro: {}, klia: {}, cfg: null, ed: {}, sel: 'ALL', last: {}, cbFile: null };
+const PV = { bus: {}, pro: {}, klia: {}, fer: {}, cfg: null, ed: {}, sel: 'ALL', last: {}, cbFile: null };
 
 const pvMk = o => o.y * 100 + o.m;
-const pvNext = o => { const d = toUTC(o); d.setUTCDate(d.getUTCDate() + 1); return fromJsDate(d); };
+const pvNext = (o, n) => { const d = toUTC(o); d.setUTCDate(d.getUTCDate() + (n || 1)); return fromJsDate(d); };
 const pvYYMM = o => `${String(o.y).slice(2)}${pad(o.m)}`;
 const pvMonLbl = o => `${PV_MON[o.m - 1]}' ${String(o.y).slice(2)}`;
 function pvCfg() {
@@ -3486,6 +3509,33 @@ function pvKliaVoucher(k) {
   return { key: `klia|${k.code}|${dmyStr(k.from)}|${dmyStr(k.to)}`, grp: 'KLIA', series: P.series, payee: payee || k.code, desc: lines.length ? lines[0].desc : `SALES [${full}]`, from: k.from, to: k.to, lines, P, srcBank: bank, srcLbl: k.bankC != null ? 'TOTAL BANK IN' : 'Payable', file: k.file, warn, op: k.code };
 }
 // engine state (already computed by the Ferry and TBS modules in this session)
+// last tracker date before the period (your voucher: UNDERSALES B/F [15/11/2026] on SALES [16/11/2026])
+function pvBfDate(st, from) { const rows = ((S.C && S.C.tracker) || {})[st] || []; let b = null; rows.forEach(x => { if (x.date && dKey(x.date) < dKey(from) && (!b || dKey(x.date) > dKey(b))) b = x.date; }); return b; }
+/* MERSING / TANJUNG GEMOK SALES MASTERLIST (the settlement you send) → its payment voucher, read straight from the SETTLEMENT sheet */
+function pvReadFerryML(wb, fileName) {
+  const ws = wb.getWorksheet('SETTLEMENT'); if (!ws) return null;
+  const g = sheetGrid(ws).g, T = r => (g[r] || []).map(pvTxt), N = (r, c) => num((g[r] || [])[c]) || 0;
+  const hd = g.slice(0, 4).map(r => r.map(pvTxt).join(' ')).join(' '), m = /(MERSING|TANJUNG GEMOK)\s+SALES/i.exec(hd + ' ' + fileName); if (!m) return null;
+  const st = m[1].toUpperCase();
+  const pr = g.findIndex(r => /^payment date/i.test(pvTxt(r[0]))); if (pr < 0) return null;
+  const d1 = anyDate(g[pr][1] instanceof Date ? g[pr][1] : pvTxt(g[pr][1])), d2 = anyDate(g[pr][3] instanceof Date ? g[pr][3] : pvTxt(g[pr][3])) || d1; if (!d1) return null;
+  const sec = k => g.findIndex(r => pvTxt(r[0]).toUpperCase() === k), gt = from => { for (let r = from; r < g.length; r++) if (/^grand total/i.test(pvTxt(g[r][0]))) return r; return -1; };
+  const iOn = sec('ONLINE'), iAg = sec('AGENT'), rOn = gt(iOn), rAg = gt(iAg); if (rOn < 0 || rAg < 0) return null;
+  const c = x => Math.round(x * 100), on = { t: N(rOn, 1), tot: c(N(rOn, 4)), comm: c(N(rOn, 5)) + c(N(rOn, 6)), mdr: c(N(rOn, 7)) + c(N(rOn, 8)), net: c(N(rOn, 9)) }, ag = { t: N(rAg, 1), tot: c(N(rAg, 4)) };
+  const rBf = g.findIndex(r => /^undersales b\/f \(from tracker\)/i.test(pvTxt(r[0]))), bf = rBf >= 0 ? c(N(rBf, 2)) : 0;
+  const lb = g.find(r => /^less: undersales b\/f/i.test(pvTxt(r[0]))), bfD = lb ? anyDate((/(\d{1,2}\/\d{1,2}\/\d{4})/.exec(pvTxt(lb[0])) || [])[1] || '') : null;
+  return { st, file: fileName, from: d1, to: d2, on, ag, bf, bfD };
+}
+function pvFerryMLVoucher(x) {
+  const P = pvP(x.st), rc = rangeText(x.from, x.to), lines = [], warn = [];
+  const net = x.on.net - x.ag.tot, rec = Math.min(Math.max(net, 0), x.bf), pay = net - rec;
+  lines.push(pvL(P.acc, `SALES [${rc}]`, x.on.tot, P.accD), pvL(P.contra, `COMMISSION ONLINE ${x.st} [${rc}]`, x.on.comm, P.contraD), pvL(P.contra, `COMMISSION MDR ${x.st} [${rc}]`, x.on.mdr, P.contraD), pvL(P.contra, `COMMISSION AGENT ${x.st} [${rc}]`, -x.ag.tot, P.contraD));
+  if (rec > 0) lines.push(pvL(P.temp, `UNDERSALES B/F [${x.bfD ? dmyStr(x.bfD) : dmyStr(pvNext(x.from, -1))}]`, -rec, P.tempD));
+  for (let i = lines.length - 1; i >= 0; i--) if (!lines[i].amtC) lines.splice(i, 1);
+  if (net < 0) warn.push(`NET is short by ${fmtC(-net)} — new undersales goes to the tracker, nothing to pay`);
+  if (rec > 0) warn.push(`Recovers ${fmtC(rec)} undersales b/f`);
+  return { key: `ferml|${x.st}|${dmyStr(x.from)}|${dmyStr(x.to)}`, grp: x.st, series: P.series, payee: P.payee, desc: `SALES [${rc}]`, from: x.from, to: x.to, lines, P, srcBank: Math.max(pay, 0), srcLbl: 'NET PAYABLE (masterlist)', file: x.file, warn, skip: pay <= 0 };
+}
 function pvFerryVouchers() {
   const out = [], R = S.C && S.C.report; if (!R || typeof computeC !== 'function') return out;
   stations().forEach(st => {
@@ -3501,7 +3551,7 @@ function pvFerryVouchers() {
     lines.push(pvL(P.acc, `SALES [${rc}]`, sm(dOn, x => x.tot), P.accD), pvL(P.contra, `COMMISSION ONLINE ${name} [${rc}]`, sm(dOn, x => x.comm + x.sc), P.contraD), pvL(P.contra, `COMMISSION MDR ${name} [${rc}]`, sm(dOn, x => x.mdr + x.sm), P.contraD), pvL(P.contra, `COMMISSION AGENT ${name} [${rc}]`, -sm(dAg, x => x.tot), P.contraD));
     for (let i = lines.length - 1; i >= 0; i--) if (!lines[i].amtC) lines.splice(i, 1);
     const warn = [];
-    if (C.rec > 0) { lines.push(pvL(P.temp, `UNDERSALES RECOVERED [${r}]`, -C.rec, P.tempD)); warn.push(`Recovers ${fmtC(C.rec)} of earlier under-settlement (tracker)`); }
+    if (C.rec > 0) { const bd = pvBfDate(st, C.from); lines.push(pvL(P.temp, `UNDERSALES B/F [${bd ? dmyStr(bd) : r}]`, -C.rec, P.tempD)); warn.push(`Recovers ${fmtC(C.rec)} undersales b/f (tracker)`); }
     if (C.nu > 0) warn.push(`NET is short by ${fmtC(C.nu)} — under-settlement goes to the tracker, nothing to pay`);
     if (!P.acc || !P.contra || !P.payee) warn.push('Account codes / payee not set — fill them in Codes before importing');
     out.push({ key: `ferry|${name}|${dmyStr(C.from)}|${dmyStr(C.to)}`, grp: key, series: P.series, payee: P.payee, desc: `SALES [${r}]`, from: C.from, to: C.to, lines, P, srcBank: C.np, srcLbl: 'NET PAYABLE', file: R.file, warn, skip: C.nu > 0 && C.np <= 0 });
@@ -3540,13 +3590,14 @@ function pvList() {
   pvEngineBus().forEach(s => { if (!have.has(s.term + dmyStr(s.from) + dmyStr(s.to))) out.push({ ...pvBusVoucher(s), eng: true }); });
   Object.entries(PV.pro).forEach(([hw, days]) => { const l = Object.values(days); if (l.length) out.push(pvProVoucher(hw, l)); });
   Object.values(PV.klia).forEach(k => out.push(pvKliaVoucher(k)));
-  try { pvFerryVouchers().forEach(v => out.push({ ...v, eng: true })); } catch (e) { }
+  Object.values(PV.fer || {}).forEach(x => out.push(pvFerryMLVoucher(x)));
+  try { pvFerryVouchers().forEach(v => { if (!out.some(o => o.grp === v.grp && dmyStr(o.from) === dmyStr(v.from) && dmyStr(o.to) === dmyStr(v.to))) out.push({ ...v, eng: true }); }); } catch (e) { }
   try { pvTbsVouchers().forEach(v => out.push({ ...v, eng: true })); } catch (e) { }
   // edits, manual lines, dates, running numbers
   out.forEach(v => {
     const e = PV.ed[v.key] || {};
     const ds = (pvCfg().docset || {})[v.series] || {};
-    v.date = (e.date && anyDate(e.date)) || (ds.date && anyDate(ds.date)) || pvNext(v.to);
+    v.date = (e.date && anyDate(e.date)) || (ds.date && anyDate(ds.date)) || pvNext(v.to, v.P && v.P.lag);
     // every line can be changed on its card: account, description, amount, project; removed lines can be put back
     v.lines = v.lines.map((l, i) => { const o = (e.lines || {})[i]; return { ...(o ? { ...l, ...o, edited: true } : l), oi: i }; });
     v.removed = v.lines.filter(l => (e.del || {})[l.oi]); v.lines = v.lines.filter(l => !(e.del || {})[l.oi]);
@@ -3620,6 +3671,8 @@ async function pvIngest(file) {
   if (!(u[0] === 0x50 && u[1] === 0x4b)) return null;
   const wb = await loadXlsx(buf), names = wb.worksheets.map(w => w.name);
   if (names.some(n => /^(MSM2TPV|M1TPV|M3TPV\s*)$/.test(n))) { PV.last = pvReadCashbook(wb); PV.cbFile = file.name; Object.assign(chip, { ok: true, kind: 'Import CashBook (last numbers)', note: Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV)/.test(o.doc)).map(o => o.doc).join(' · ') }); return chip; }
+  const fm = pvReadFerryML(wb, file.name);
+  if (fm) { PV.fer = PV.fer || {}; PV.fer[`${fm.st}|${dKey(fm.from)}|${dKey(fm.to)}`] = fm; Object.assign(chip, { ok: true, kind: `PV · Ferry ${fm.st} (masterlist)`, date: rangeText(fm.from, fm.to), note: `Online NET ${fmtC(fm.on.net)} · agent ${fmtC(fm.ag.tot)}${fm.bf ? ' · b/f ' + fmtC(fm.bf) : ''}` }); return chip; }
   const b = typeof isCompletedSettlement === 'function' && isCompletedSettlement(wb) ? pvReadBus(wb, file.name) : null;
   if (b) { PV.bus[b.term + dmyStr(b.from) + dmyStr(b.to)] = b; Object.assign(chip, { ok: true, kind: `PV · Daily Settlement ${b.term}`, date: rangeText(b.from, b.to), note: `TOTAL BANK IN ${fmtC(b.bankC)}` }); return chip; }
   const p = pvReadPro(wb, file.name);
@@ -3738,7 +3791,7 @@ if (typeof document !== 'undefined' && typeof HTMLElement !== 'undefined') {
     else if (a === 'pvlback') { delete (ed(k).del || {})[b.dataset.oi]; renderAll(); }
     else if (a === 'pvlcopy') { const v = pvList().find(x => x.key === k), l = v && v.lines.find(x => b.dataset.xi != null ? x.xi === +b.dataset.xi : x.oi === +b.dataset.oi); if (!l) return; (ed(k).extra = ed(k).extra || []).push({ acc: l.acc, accD: l.accD, desc: l.desc, amtC: l.amtC, ...(l.proj != null ? { proj: l.proj } : {}) }); toast('Line copied — change it at the bottom of the voucher'); renderAll(); }
     else if (a === 'pvlreset') { if (!confirm('Undo every change you made on this voucher (lines, payee, description, payment method)?')) return; ['lines', 'del', 'extra', 'payee', 'desc', 'pm'].forEach(x => delete ed(k)[x]); renderAll(); }
-    else if (a === 'pvclr') { PV.bus = {}; PV.pro = {}; PV.klia = {}; PV.ed = {}; S.files = (S.files || []).filter(f => f.module !== 'V'); renderAll(); }
+    else if (a === 'pvclr') { PV.bus = {}; PV.pro = {}; PV.klia = {}; PV.fer = {}; PV.ed = {}; S.files = (S.files || []).filter(f => f.module !== 'V'); renderAll(); }
     else if (a === 'pvdl') { const l = pvList().filter(v => !v.off), miss = l.filter(v => !v.doc).length, bad = l.filter(v => !v.ok).length; if (miss) { toast(`${miss} voucher(s) have no voucher no. — type the start number`, 'bad'); return; } const noAcc = l.filter(v => v.lines.some(x => !x.acc) || !v.payee).map(v => v.P.label); if (noAcc.length) { toast(`Account code / payee missing for: ${[...new Set(noAcc)].join(', ')} — fill them in Cash Book codes (or untick those vouchers)`, 'bad'); return; } if (bad && !confirm(`${bad} voucher(s) do not match their settlement total. Download anyway?`)) return; await busy('Building Import CashBook…', async () => saveBlob(`IMPORT CASHBOOK PV ${typeof cuToday === 'function' ? cuToday() : pvYYMM(l[0].date)}.xlsx`, await pvXlsx(l))); }
     else if (a === 'pvcopy') { const t = pvTsv(pvList(), b.dataset.v, !!b.dataset.h); try { await navigator.clipboard.writeText(t); toast(`${b.dataset.v}: header + ${t.split('\n').length - 1} rows copied (columns A–AQ) — in AutoCount click Paste from Clipboard`); } catch (er) { toast('Clipboard blocked by the browser', 'bad'); } }
   });
@@ -6473,7 +6526,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v59';
+  const VER = 'v60';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6532,7 +6585,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v59';
+const SE_VER = 'v60';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
