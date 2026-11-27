@@ -3336,7 +3336,7 @@ const pvYYMM = o => `${String(o.y).slice(2)}${pad(o.m)}`;
 const pvMonLbl = o => `${PV_MON[o.m - 1]}' ${String(o.y).slice(2)}`;
 function pvCfg() {
   if (!PV.cfg) PV.cfg = { p: {}, kops: {}, next: {} };
-  const c = PV.cfg; Object.keys(PV_DEF).forEach(k => { c.p[k] = { ...PV_DEF[k], ...(c.p[k] || {}) }; });
+  const c = PV.cfg; Object.keys(PV_DEF).forEach(k => { const o = c.p[k] || {}, keep = {}; Object.keys(o).forEach(f => { if (!(o[f] === '' && PV_DEF[k][f])) keep[f] = o[f]; }); c.p[k] = { ...PV_DEF[k], ...keep }; });
   c.kops = { ...PV_KOPS, ...(c.kops || {}) }; c.next = c.next || {};
   return c;
 }
@@ -3714,7 +3714,7 @@ async function pvIngest(file) {
   if (u[0] === 0x25 && u[1] === 0x50) return typeof pvKtmPdf === 'function' ? pvKtmPdf(file, buf) : null;   // %PDF
   if (!(u[0] === 0x50 && u[1] === 0x4b)) return null;
   const wb = await loadXlsx(buf), names = wb.worksheets.map(w => w.name);
-  if (names.some(n => /^(MSM2TPV|M1TPV|M3TPV\s*)$/.test(n))) { PV.last = pvReadCashbook(wb); PV.cbFile = file.name; Object.assign(chip, { ok: true, kind: 'Import CashBook (last numbers)', note: Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV)/.test(o.doc)).map(o => o.doc).join(' · ') }); return chip; }
+  if (names.some(n => /^(MSM2TPV|M1TPV|M3TPV|MPV)\s*$/.test(n))) { PV.last = pvReadCashbook(wb); PV.cbFile = file.name; Object.assign(chip, { ok: true, kind: 'Import CashBook (last numbers)', note: Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV|MPV)/.test(o.doc)).map(o => o.doc).join(' · ') }); return chip; }
   const tm = pvReadTbsML(wb, file.name);
   if (tm) { PV.tbs = PV.tbs || {}; PV.tbs[`${dKey(tm.from)}|${dKey(tm.to)}`] = tm; Object.assign(chip, { ok: true, kind: 'PV · TBS (sales masterlist)', date: rangeText(tm.from, tm.to), note: `Kiosk ${fmtC(tm.k ? tm.k.net : 0)} · Online ${fmtC(tm.o ? tm.o.net : 0)}` }); return chip; }
   const fm = pvReadFerryML(wb, file.name);
@@ -3798,7 +3798,7 @@ EXT.render.V = function renderV() {
   const months = [...new Set(all.map(v => v.series + '|' + pvYYMM(v.date)))].sort();
   let h = `<div class="seg pvseg" style="flex-wrap:wrap">${PV_GRPS.map(([k, l]) => { const n = k === 'SET' ? '' : all.filter(v => pvInGrp(v, k) && !v.off).length; return `<button class="${k === sel ? 'on' : ''}" data-act="pvsel" data-v="${k}">${l}${n ? ` <small>${n}</small>` : ''}</button>`; }).join('')}</div>`;
   if (sel === 'SET') { panel().innerHTML = h + pvCodes(); return; }
-  h += `<section class="card"><h3>Doc No &amp; payment date</h3><p class="hint">Doc No = <b>code</b> + <b>running no.</b> + / + <b>YY</b><b>MM</b> (e.g. <code>M1TPV01/2611</code>). Choose for each series the code, the first number, the month/year and the payment date — every voucher of that series follows (01, 02, 03…). You can still change one voucher's No / Date on its card. ${PV.cbFile ? `Last in <b>${esc(PV.cbFile)}</b>: ${Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV)/.test(o.doc)).map(o => esc(o.doc)).join(' · ')}` : 'Drop your Import CashBook file here to see the last numbers used.'}</p>
+  h += `<section class="card"><h3>Doc No &amp; payment date</h3><p class="hint">Doc No = <b>code</b> + <b>running no.</b> + / + <b>YY</b><b>MM</b> (e.g. <code>M1TPV01/2611</code>). Choose for each series the code, the first number, the month/year and the payment date — every voucher of that series follows (01, 02, 03…). You can still change one voucher's No / Date on its card. ${PV.cbFile ? `Last in <b>${esc(PV.cbFile)}</b>: ${Object.values(PV.last).filter(o => /^(MSM2TPV|M1TPV|M3TPV|MPV)/.test(o.doc)).map(o => esc(o.doc)).join(' · ')}` : 'Drop your Import CashBook file here to see the last numbers used.'}</p>
   ${pvDocSet(all)}
   <div class="actions"><button class="btn pri" data-act="pvdl">⬇ Import CashBook (.xlsx)</button>${all.some(v => v.grp === 'KTM' && !v.off) ? '<button class="btn ok" data-act="ktmrc" title="Maybank RCgen bulk payment file for the KTM vouchers: ETS · INTERCITY · OTHERS · KOMUTER per day, to Tenang Capital">⬇ RCgen KTM (.txt)</button>' : ''}${[...new Set(all.filter(v => !v.off).map(v => v.series))].map(s => `<button class="btn" data-act="pvcopy" data-v="${esc(s)}" data-h="1" title="DocNo header row + vouchers, columns A to AQ">Copy ${esc(s)} for AutoCount</button>`).join('')}<span class="sp"></span><button class="btn sm" data-act="pvclr">Clear files</button></div>
   <p class="hint"><b>AutoCount → Import Cash Book → Paste from Clipboard:</b> click <b>Copy … for AutoCount</b> here, then <b>Paste from Clipboard</b> — no Excel needed. From the Excel file instead: select from cell <b>A3</b> (DocNo header row, starting at column <b>A</b>) to column <b>AQ</b> of the last row. Starting at column B shifts every field and AutoCount says <i>Not valid Doc No for import found</i>. Import one series (MSM2TPV / M1TPV / M3TPV) at a time.</p></section>`;
@@ -6777,7 +6777,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
   document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K') && !document.querySelector('.rvm')) { e.preventDefault(); palette(); } });
 
   /* ---------- feedback notes: the team writes problems / improvements; copied as one block to paste to the developer ---------- */
-  const VER = 'v67';
+  const VER = 'v68';
   const FB = { notes: [], errs: [], who: '' };
   const stamp = d => { const p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const logErr = m => { m = String(m || '').slice(0, 300); if (!m) return; FB.errs.push(`${stamp(new Date())} ${m}`); FB.errs = FB.errs.slice(-15); DB.set('fbErrs', FB.errs); };
@@ -6836,7 +6836,7 @@ thead{display:table-header-group}tr{break-inside:avoid}
 })();
 
 /* ====================== version badge · new-version notice · drag overlay ====================== */
-const SE_VER = 'v67';
+const SE_VER = 'v68';
 (function () {
   if (typeof HTMLElement === 'undefined') return;
   const css = document.createElement('style');
